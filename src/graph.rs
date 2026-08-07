@@ -3,10 +3,10 @@ use core::{any::TypeId, convert::identity, hash::Hash};
 use std::{boxed::Box, collections::VecDeque, vec::Vec};
 
 use crate::{
+    DeclarativePlugin, PluginOutput,
     erased::resource::StagedResource,
     erased::schedule::{StagedScheduleLabel, StagedSystem},
     plugin_data::{MessageRegistration, PluginDependency, PluginTypeId},
-    DeclarativePlugin, PluginOutput,
 };
 
 /// A list of "entry point" plugins and their outputs. This gets expanded into a graph.
@@ -203,7 +203,9 @@ impl PluginRegistrationGraph {
                 break;
             };
             if tripped {
-                panic!("candidate finding function found complete list, but entries seem to already be missing.")
+                panic!(
+                    "candidate finding function found complete list, but entries seem to already be missing."
+                )
             }
             extracted.push(entry.remove(ix));
             if let Some(dependencies) = self.dependency_edges.get(&candidate) {

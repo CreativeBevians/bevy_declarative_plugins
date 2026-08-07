@@ -9,7 +9,7 @@ use bevy_ecs::{
     world::World,
 };
 
-use crate::{metadata_ptr::MetadataPtr};
+use crate::metadata_ptr::MetadataPtr;
 
 pub(crate) struct ErasedScheduleLabel(MetadataPtr);
 

@@ -13,8 +13,8 @@ use core::{
 use std::{boxed::Box, vec::Vec};
 
 use crate::{
-    approval::Approval, erased::resource::StagedResource, erased::schedule::StagedSystem, App,
-    DeclarativePlugin,
+    App, DeclarativePlugin, approval::Approval, erased::resource::StagedResource,
+    erased::schedule::StagedSystem,
 };
 
 /// A list of plugin dependencies for a particular [`PluginOutput`].

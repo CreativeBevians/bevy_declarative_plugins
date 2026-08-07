@@ -9,9 +9,7 @@ pub mod plugin_data;
 use bevy_app::App;
 pub use plugin_data::PluginOutput;
 
-use crate::{
-    graph::{PluginList, PluginRegistrationGraph},
-};
+use crate::graph::{PluginList, PluginRegistrationGraph};
 
 /// A declarative alternative to [`Plugin`]
 pub trait DeclarativePlugin: Any {
