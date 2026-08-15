@@ -1,3 +1,5 @@
+#[cfg(feature = "state")]
+use bevy_ecs::world::FromWorld;
 use bevy_ecs::{
     message::Message,
     observer::{IntoObserver, Observer},
@@ -6,15 +8,22 @@ use bevy_ecs::{
     system::ScheduleSystem,
 };
 use bevy_platform::collections::HashMap;
+#[cfg(feature = "state")]
+use bevy_state::state::States;
 use core::{
     any::{Any, TypeId},
     hash::Hash,
 };
-use std::{boxed::Box, vec::Vec};
+use std::{boxed::Box, marker::PhantomData, vec::Vec};
 
 use crate::{
-    App, DeclarativePlugin, approval::Approval, erased::resource::StagedResource,
-    erased::schedule::StagedSystem,
+    App, DeclarativePlugin,
+    approval::Approval,
+    erased::{
+        dataless::{ErasedDataless, OrderedDataless},
+        resource::StagedResource,
+        schedule::StagedSystem,
+    },
 };
 
 /// A list of plugin dependencies for a particular [`PluginOutput`].
@@ -48,6 +57,8 @@ pub struct PluginOutput<D = PluginDependencies> {
     /// Resource storage
     pub(crate) resource_staging: Vec<StagedResource>,
     pub(crate) plugin_approval: HashMap<PluginTypeId, Approval<Box<dyn DeclarativePlugin>>>,
+    #[cfg(feature = "state")]
+    pub(crate) states: Vec<ErasedDataless<()>>,
     /// Plugin dependencies, represented with a generic so we can erase them in
     /// plugin graph resolution.
     pub(crate) dependencies: D,
@@ -63,6 +74,7 @@ impl<D> PluginOutput<D> {
             schedules,
             messages,
             resource_staging,
+            states,
             dependencies,
             plugin_approval,
         } = self;
@@ -76,6 +88,7 @@ impl<D> PluginOutput<D> {
                 messages,
                 resource_staging,
                 plugin_approval,
+                states,
                 dependencies: (),
             },
             dependencies,
@@ -99,7 +112,19 @@ impl PluginOutput {
             resource_staging: Vec::new(),
             dependencies: PluginDependencies(Vec::new()),
             plugin_approval: HashMap::new(),
+            states: Vec::new(),
         }
+    }
+
+    #[cfg(feature = "state")]
+    pub fn init_state<T: States + Default>(&mut self) {
+        self.states.push(ErasedDataless {
+            ordering: (),
+            func: |world| {
+                use bevy_state::state::State;
+                world.get_resource_or_init::<State<T>>();
+            },
+        });
     }
 
     pub fn add_systems<M: 'static>(
@@ -107,27 +132,12 @@ impl PluginOutput {
         schedule: impl ScheduleLabel + 'static,
         systems: impl IntoScheduleConfigs<ScheduleSystem, M> + 'static,
     ) -> &mut Self {
-        self.schedules.add_systems(schedule, systems);
+        let _ = self.schedules.add_systems(schedule, systems);
         self
     }
 
     pub fn add_observer<M>(&mut self, observer: impl IntoObserver<M>) -> &mut Self {
         self.observers.push(observer.into_observer());
-        self
-    }
-
-    pub fn add_dependency<P: DeclarativePlugin + Default>(&mut self) -> &mut Self {
-        self.add_dependency_with_approval::<P, _>(|_| true)
-    }
-
-    pub fn add_dependency_with_approval<
-        P: DeclarativePlugin + Default,
-        F: Fn(&P) -> bool + 'static,
-    >(
-        &mut self,
-        approval: F,
-    ) -> &mut Self {
-        self.add_dependency_with_plugin_config_and_approval(P::default(), approval);
         self
     }
 
@@ -190,55 +200,74 @@ impl PluginOutput {
         self.resource_staging.push(resource);
         self
     }
-
-    /// Add a plugin dependency to the plugin output
-    pub fn add_dependency_with_plugin_config_and_approval<
-        P: DeclarativePlugin,
-        F: for<'a> Fn(&'a P) -> bool + 'static,
-    >(
-        &mut self,
-        plugin: P,
-        approval: F,
-    ) -> &mut Self {
-        self.dependencies
-            .0
-            .push(PluginDependency::new_with_config(plugin));
-        self.add_dependency_approval::<P, _>(approval);
-        self
-    }
-
-    pub fn add_dependency_with_plugin_config<P: DeclarativePlugin>(
-        &mut self,
-        plugin: P,
-    ) -> &mut Self {
-        self.add_dependency_with_plugin_config_and_approval::<P, _>(plugin, |_| true);
-        self
-    }
-
-    fn add_dependency_approval<
-        P: DeclarativePlugin + 'static,
-        F: for<'a> Fn(&'a P) -> bool + 'static,
-    >(
-        &mut self,
-        approval: F,
-    ) {
-        // We always approve zero-sized types. There is no config, and `|_| false` is considered a misbehave.
-        let is_zst = size_of::<P>() == 0;
-        let plugin_type_id = PluginTypeId(TypeId::of::<P>());
-        if is_zst {
-            self.plugin_approval
-                .insert(plugin_type_id, Approval::always_approve());
-        } else {
-            self.plugin_approval.insert(
-                plugin_type_id,
-                Approval::new(move |dyn_plugin| {
-                    let Some(plugin) = <dyn Any>::downcast_ref::<P>(dyn_plugin) else {
-                        return false;
-                    };
-                    approval(plugin)
-                }),
-            );
+    pub fn dependency_builder<'a, P>(&'a mut self) -> DependencyBuilder<'a, P> {
+        DependencyBuilder {
+            config: None,
+            approval: None,
+            output: self,
         }
+    }
+}
+
+pub struct DependencyBuilder<'a, P> {
+    config: Option<P>,
+    approval: Option<Approval<Box<dyn DeclarativePlugin>>>,
+    output: &'a mut PluginOutput,
+}
+
+impl<'a, P> DependencyBuilder<'a, P> {
+    pub fn build(self) -> &'a mut PluginOutput
+    where
+        P: DeclarativePlugin,
+    {
+        let type_id = PluginTypeId(TypeId::of::<P>());
+        let Self {
+            config,
+            approval,
+            output,
+        } = self;
+        if let Some(approval) = approval {
+            output.plugin_approval.insert(type_id, approval);
+        }
+        let dependency = if let Some(config) = config {
+            PluginDependency::new_with_config(config)
+        } else {
+            PluginDependency::new::<P>()
+        };
+        output.dependencies.0.push(dependency);
+        output
+    }
+
+    pub fn build_and_next<P2>(self) -> DependencyBuilder<'a, P2>
+    where
+        P: DeclarativePlugin,
+        P2: DeclarativePlugin,
+    {
+        self.build().dependency_builder()
+    }
+
+    pub fn with_config(&mut self, config: P) -> &mut Self
+    where
+        P: DeclarativePlugin,
+    {
+        self.config = Some(config);
+        self
+    }
+
+    pub fn with_approval<F: for<'b> Fn(&'b P) -> bool + 'static>(
+        &mut self,
+        approval: F,
+    ) -> &mut Self
+    where
+        P: DeclarativePlugin,
+    {
+        self.approval = Some(Approval::new(move |dyn_plugin| {
+            let Some(plugin) = <dyn Any>::downcast_ref::<P>(dyn_plugin) else {
+                return false;
+            };
+            approval(plugin)
+        }));
+        self
     }
 }
 

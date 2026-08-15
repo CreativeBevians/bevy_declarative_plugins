@@ -3,8 +3,12 @@ name = "enhanced_plugins"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["state"]
+state = ["dep:bevy_state"]
+
 [dependencies]
 bevy_app = {version = "0.19.0"}
-bevy_state = "0.19.0"
+bevy_state = {version = "0.19.0", optional = true}
 bevy_ecs = "0.19.0"
 bevy_platform = "0.19.0"

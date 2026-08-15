@@ -7,8 +7,8 @@ pub type OrderedDataless = ErasedDataless<Order>;
 pub type Order = Option<BeforeOrAfter<RegistrationOrder>>;
 
 pub struct ErasedDataless<O> {
-    ordering: O,
-    func: fn(&mut World),
+    pub(crate) ordering: O,
+    pub(crate) func: fn(&mut World),
 }
 
 pub enum RegistrationOrder {
