@@ -54,7 +54,7 @@ impl MetadataPtr {
         }
     }
 
-    pub fn visit<T: Sized + 'static, Y>(&self, peek: impl for<'b> Fn(&'b T) -> Y) -> Option<Y> {
+    pub fn visit<T: Sized + 'static, Y>(&self, peek: impl for<'b> FnOnce(&'b T) -> Y) -> Option<Y> {
         let layout = Layout::new::<T>();
         let type_id = TypeId::of::<T>();
         if layout == self.layout && type_id == self.type_id && !self.already_dropped {

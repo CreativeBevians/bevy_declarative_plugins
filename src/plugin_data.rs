@@ -22,7 +22,7 @@ use crate::{
     erased::{
         dataless::{ErasedDataless, OrderedDataless},
         resource::StagedResource,
-        schedule::StagedSystem,
+        schedule::{StagedScheduleLabel, StagedSystem},
     },
 };
 
@@ -50,8 +50,8 @@ pub struct PluginOutput<D = PluginDependencies> {
     /// Observers registered by this plugin.
     pub(crate) observers: Vec<Observer>,
     /// The schedule graph for this plugin (to be merged with others later)
-    // TODO: Either roll our own
     pub(crate) schedules: MergeableSchedule,
+    pub(crate) schedule_labels: Vec<StagedScheduleLabel>,
     /// Message storage
     pub(crate) messages: HashMap<TypeId, MessageRegistration>,
     /// Resource storage
@@ -77,6 +77,7 @@ impl<D> PluginOutput<D> {
             states,
             dependencies,
             plugin_approval,
+            schedule_labels,
         } = self;
         (
             PluginOutput {
@@ -90,6 +91,7 @@ impl<D> PluginOutput<D> {
                 plugin_approval,
                 states,
                 dependencies: (),
+                schedule_labels,
             },
             dependencies,
         )
@@ -113,6 +115,7 @@ impl PluginOutput {
             dependencies: PluginDependencies(Vec::new()),
             plugin_approval: HashMap::new(),
             states: Vec::new(),
+            schedule_labels: Vec::new(),
         }
     }
 

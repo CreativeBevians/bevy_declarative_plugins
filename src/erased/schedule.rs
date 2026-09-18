@@ -4,7 +4,7 @@ use std::hash::DefaultHasher;
 use bevy_app::MainScheduleOrder;
 use bevy_ecs::{
     label::DynHash,
-    schedule::{IntoScheduleConfigs, ScheduleLabel, Schedules},
+    schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, Schedules},
     system::ScheduleSystem,
     world::World,
 };
@@ -40,15 +40,29 @@ impl ErasedScheduleLabel {
     ) -> Option<Self> {
         Some(Self(MetadataPtr::new((label, relative_to))?))
     }
+
+    pub(crate) fn init_to_world<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+        &self,
+        world: &mut World,
+    ) -> Option<()> {
+        self.0
+            .visit::<(S, BeforeOrAfter<O>), ()>(|(schedule, other)| {
+                let mut schedules = world.resource_mut::<Schedules>();
+                let label = schedule.intern();
+                if !schedules.contains(label) {
+                    schedules.insert(Schedule::new(label));
+                }
+                let other_label = other.get().intern();
+                if !schedules.contains(other_label) {
+                    schedules.insert(Schedule::new(other_label));
+                }
+                drop(schedules);
+            })
+    }
 }
 
 pub(crate) struct StagedScheduleLabel {
     staged: Staged<ErasedScheduleLabel>,
-    // we store these to be able to order how new schedule labels are registered later.
-    // Both the typeid and the dynhash output because otherwise it's difficult to
-    label_id: (TypeId, u64),
-
-    other_id: BeforeOrAfter<(TypeId, u64)>,
 }
 
 impl StagedScheduleLabel {
@@ -56,45 +70,28 @@ impl StagedScheduleLabel {
         label: S,
         relative_to: BeforeOrAfter<O>,
     ) -> Option<Self> {
-        let label_hash = Self::hash(&label);
-        let label_id = (TypeId::of::<S>(), label_hash);
-        let other_hash = Self::hash(relative_to.get());
-        let other_id = match &relative_to {
-            BeforeOrAfter::Before(_) => BeforeOrAfter::Before((TypeId::of::<O>(), other_hash)),
-            BeforeOrAfter::After(_) => BeforeOrAfter::After((TypeId::of::<O>(), other_hash)),
-        };
         Some(Self {
             staged: Staged {
                 erased: ErasedScheduleLabel::new(label, relative_to)?,
                 unerase_and_apply_to_world: |world, erased| {
-                    let mut schedule_order = world.get_resource_or_init::<MainScheduleOrder>();
-                    match erased.0.try_reverse_erase::<(S, BeforeOrAfter<O>)>() {
-                        Ok((label, BeforeOrAfter::Before(other_label))) => {
-                            schedule_order.insert_before(other_label, label);
+                    let initialized = erased.init_to_world::<S, O>(world).is_some();
+                    if initialized {
+                        let mut schedule_order = world.get_resource_or_init::<MainScheduleOrder>();
+                        match erased.0.try_reverse_erase::<(S, BeforeOrAfter<O>)>() {
+                            Ok((label, BeforeOrAfter::Before(other_label))) => {
+                                schedule_order.insert_before(other_label, label);
+                            }
+                            Ok((label, BeforeOrAfter::After(other_label))) => {
+                                schedule_order.insert_after(other_label, label);
+                            }
+                            Err(_) => {
+                                panic!("Incorrect label type.")
+                            }
                         }
-                        Ok((label, BeforeOrAfter::After(other_label))) => {
-                            schedule_order.insert_after(other_label, label);
-                        }
-                        Err(_) => {}
                     }
                 },
             },
-            label_id,
-            other_id,
         })
-    }
-
-    fn hasher() -> DefaultHasher {
-        DefaultHasher::new()
-    }
-
-    fn hash<H>(i: &H) -> u64
-    where
-        H: DynHash,
-    {
-        let mut hasher = Self::hasher();
-        i.dyn_hash(&mut hasher);
-        hasher.finish()
     }
 }
 

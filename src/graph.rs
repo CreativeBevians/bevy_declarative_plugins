@@ -1,11 +1,19 @@
 use bevy_platform::collections::{HashMap, HashSet};
 use core::{any::TypeId, convert::identity, hash::Hash};
-use std::{boxed::Box, collections::VecDeque, vec::Vec};
+use std::{
+    any::Any,
+    boxed::Box,
+    collections::{BTreeSet, VecDeque},
+    vec::Vec,
+};
 
 use crate::{
     DeclarativePlugin, PluginOutput,
-    erased::resource::StagedResource,
-    erased::schedule::{StagedScheduleLabel, StagedSystem},
+    approval::Approval,
+    erased::{
+        resource::StagedResource,
+        schedule::{StagedScheduleLabel, StagedSystem},
+    },
     plugin_data::{MessageRegistration, PluginDependency, PluginTypeId},
 };
 
@@ -34,6 +42,7 @@ impl PluginList {
                 dependency_queue.extend(dependencies.0.into_iter().map(|d| (reg_id, d)));
                 zst_already_expanded.insert(type_id, reg_id);
             } else if !output.is_zero_sized_optimizable {
+                unimplemented!()
             }
         }
         // TODO: detect cycles in expansion + stop adding when "expanded enough" + solved.
@@ -339,6 +348,11 @@ impl PluginRegistrationGraph {
 #[allow(unused)]
 pub(crate) struct OrderedPluginItems(Vec<DeclrItem>);
 
+pub(crate) enum PluginResolutionError {
+    NoResourceCandidate(Vec<(TypeId, &'static str)>),
+    NoPluginCandidate(Vec<(PluginTypeId, &'static str)>),
+}
+
 /// A graph
 pub(crate) struct ItemsGraph {
     sources: HashMap<PluginTypeId, PluginNode>,
@@ -366,7 +380,97 @@ impl ItemsGraph {
         }
     }
 
-    pub(crate) fn compute_resources(&mut self) -> Result<(), ()> {
+    pub(crate) fn compute_resources(&mut self) -> Result<(), PluginResolutionError> {
+        self.accepted_resource_sources.drain();
+        let mut conflicting_sources: HashMap<TypeId, (BTreeSet<PluginTypeId>, &'static str)> =
+            HashMap::new();
+        for (source, node) in &self.sources {
+            for resource in &node.output.resource_staging {
+                let resource_id = resource.erased_resource.type_id();
+                let entry = conflicting_sources.entry(resource_id).or_default();
+                entry.0.insert(*source);
+                entry.1 = resource.resource_name;
+            }
+        }
+        let mut no_candidates = Vec::new();
+        for (resource_id, (mut source_ids, resource_name)) in conflicting_sources {
+            // We use `source_ids` as a list of candidates, removing ones that have hard conflicts as we go.
+            if source_ids.len() == 1
+                && let Some(source_id) = source_ids.pop_first()
+            {
+                self.accepted_resource_sources
+                    .insert(resource_id, source_id);
+            } else {
+                let approve_all = Approval::always_approve();
+                let mut to_remove = BTreeSet::new();
+                for (_, plugin_node) in self
+                    .sources
+                    .iter()
+                    .filter(|(plugin_id, _)| source_ids.contains(*plugin_id))
+                {
+                    let approval = plugin_node
+                        .output
+                        .resource_staging
+                        .iter()
+                        .find_map(|resource| {
+                            (resource.erased_resource.0.type_id() == resource_id)
+                                .then_some(&resource.approval_from_plugin)
+                        })
+                        .unwrap_or(&approve_all);
+
+                    for source_inner in &source_ids {
+                        if !to_remove.contains(source_inner)
+                            && let Some(staged_resource) =
+                                self.sources.get(source_inner).and_then(|node| {
+                                    node.output.resource_staging.iter().find(|resource| {
+                                        resource.erased_resource.0.type_id() == resource_id
+                                    })
+                                })
+                            && approval.approves(&staged_resource.erased_resource)
+                        {
+                            // We can keep this as the following has been met:
+                            // 1. It's not already marked for removal
+                            // 2. The resource type is present.
+                            // 3. The approval function for the outer loop passes.
+                        } else {
+                            to_remove.insert(*source_inner);
+                        }
+                    }
+                }
+
+                if source_ids.len() == to_remove.len() || source_ids.is_empty() {
+                    // There are no valid resources, accumulate an error.
+                    no_candidates.push((resource_id, resource_name));
+                    continue;
+                }
+                let mut candidates = source_ids.difference(&to_remove);
+                let mut ongoing_candidate = candidates.next().unwrap();
+                // Now  we have candidates, we choose one closest to the "root"
+                // of the tree so that we respect user requirements.
+                for compare_candidate in candidates {
+                    let (Some(ongoing), Some(compare)) = (
+                        self.sources.get(ongoing_candidate),
+                        self.sources.get(compare_candidate),
+                    ) else {
+                        continue;
+                    };
+                    let ongoing_distance = ongoing.distance_from_entry.unwrap_or(usize::MAX);
+                    let compare_distance = compare.distance_from_entry.unwrap_or(usize::MAX);
+                    // let ongoing_data = (ongoing.distance_from_entry, ongoing.output.resource_staging.iter().find(|r| r.erased_resource.0.type_id() == resource_id).unwrap());
+                    // let compare_data = (compare.distance_from_entry, compare.output.resource_staging.iter().find(|r| r.erased_resource.0.type_id() == resource_id).unwrap());
+                    // match (ongoing_data, compare_data) {
+                    //     ((Some(x), a), (Some(y), b)) => {},
+                    //     ((None, _), (Some(y), b)) => {
+
+                    //     }
+
+                    // }
+                }
+            }
+            if !no_candidates.is_empty() {
+                return Err(PluginResolutionError::NoResourceCandidate(no_candidates));
+            }
+        }
         Ok(())
     }
 

@@ -1,3 +1,5 @@
+use std::any::type_name;
+
 use bevy_ecs::{resource::Resource, world::World};
 
 use crate::{approval::Approval, metadata_ptr::MetadataPtr};
@@ -16,6 +18,7 @@ pub(crate) struct StagedResource {
     pub(crate) approval_from_plugin: Approval<ErasedResource>,
     /// If the staged resource is a default, we care about it less than any given
     pub(crate) is_default: bool,
+    pub(crate) resource_name: &'static str,
 }
 
 impl StagedResource {
@@ -38,6 +41,7 @@ impl StagedResource {
                     .unwrap_or(true)
             }),
             is_default,
+            resource_name: type_name::<R>(),
         })
     }
 }
