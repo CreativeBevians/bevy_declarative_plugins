@@ -55,7 +55,7 @@ pub struct PluginOutput<D = PluginDependencies> {
     /// Message storage
     pub(crate) messages: HashMap<TypeId, MessageRegistration>,
     /// Resource storage
-    pub(crate) resource_staging: Vec<StagedResource>,
+    pub(crate) resource_staging: HashMap<TypeId, StagedResource>,
     pub(crate) plugin_approval: HashMap<PluginTypeId, Approval<Box<dyn DeclarativePlugin>>>,
     #[cfg(feature = "state")]
     pub(crate) states: Vec<ErasedDataless<()>>,
@@ -96,6 +96,10 @@ impl<D> PluginOutput<D> {
             dependencies,
         )
     }
+
+    pub(crate) fn get_resource(&self, resource_id: TypeId) -> Option<&StagedResource> {
+        self.resource_staging.get(&resource_id)
+    }
 }
 
 impl PluginOutput {
@@ -111,7 +115,7 @@ impl PluginOutput {
                 schedules: Vec::new(),
             },
             messages: HashMap::new(),
-            resource_staging: Vec::new(),
+            resource_staging: HashMap::new(),
             dependencies: PluginDependencies(Vec::new()),
             plugin_approval: HashMap::new(),
             states: Vec::new(),
@@ -171,7 +175,7 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(R::default(), true, |_| true) else {
             return self;
         };
-        self.resource_staging.push(resource);
+        self.resource_staging.insert(TypeId::of::<R>(), resource);
         self
     }
 
@@ -179,7 +183,7 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(resource, false, |_| true) else {
             return self;
         };
-        self.resource_staging.push(resource);
+        self.resource_staging.insert(TypeId::of::<R>(), resource);
         self
     }
 
@@ -191,7 +195,7 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(resource, false, approval) else {
             return self;
         };
-        self.resource_staging.push(resource);
+        self.resource_staging.insert(TypeId::of::<R>(), resource);
         self
     }
 
@@ -200,7 +204,7 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(resource, false, |_| true) else {
             return self;
         };
-        self.resource_staging.push(resource);
+        self.resource_staging.insert(TypeId::of::<R>(), resource);
         self
     }
     pub fn dependency_builder<'a, P>(&'a mut self) -> DependencyBuilder<'a, P> {

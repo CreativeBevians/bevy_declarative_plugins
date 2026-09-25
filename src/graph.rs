@@ -3,7 +3,7 @@ use core::{any::TypeId, convert::identity, hash::Hash};
 use std::{
     any::Any,
     boxed::Box,
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     vec::Vec,
 };
 
@@ -386,10 +386,10 @@ impl ItemsGraph {
             HashMap::new();
         for (source, node) in &self.sources {
             for resource in &node.output.resource_staging {
-                let resource_id = resource.erased_resource.type_id();
-                let entry = conflicting_sources.entry(resource_id).or_default();
+                let resource_id = resource.0;
+                let entry = conflicting_sources.entry(*resource_id).or_default();
                 entry.0.insert(*source);
-                entry.1 = resource.resource_name;
+                entry.1 = resource.1.resource_name;
             }
         }
         let mut no_candidates = Vec::new();
@@ -413,8 +413,7 @@ impl ItemsGraph {
                         .resource_staging
                         .iter()
                         .find_map(|resource| {
-                            (resource.erased_resource.0.type_id() == resource_id)
-                                .then_some(&resource.approval_from_plugin)
+                            (*resource.0 == resource_id).then_some(&resource.1.approval_from_plugin)
                         })
                         .unwrap_or(&approve_all);
 
@@ -422,11 +421,12 @@ impl ItemsGraph {
                         if !to_remove.contains(source_inner)
                             && let Some(staged_resource) =
                                 self.sources.get(source_inner).and_then(|node| {
-                                    node.output.resource_staging.iter().find(|resource| {
-                                        resource.erased_resource.0.type_id() == resource_id
-                                    })
+                                    node.output
+                                        .resource_staging
+                                        .iter()
+                                        .find(|resource| *resource.0 == resource_id)
                                 })
-                            && approval.approves(&staged_resource.erased_resource)
+                            && approval.approves(&staged_resource.1.erased_resource)
                         {
                             // We can keep this as the following has been met:
                             // 1. It's not already marked for removal
@@ -444,9 +444,10 @@ impl ItemsGraph {
                     continue;
                 }
                 let mut candidates = source_ids.difference(&to_remove);
+                // We can unwrap because of the length check just before here.
                 let mut ongoing_candidate = candidates.next().unwrap();
                 // Now  we have candidates, we choose one closest to the "root"
-                // of the tree so that we respect user requirements.
+                // of the tree so that we respect user requirements, preferring non-defaults.
                 for compare_candidate in candidates {
                     let (Some(ongoing), Some(compare)) = (
                         self.sources.get(ongoing_candidate),
@@ -456,16 +457,18 @@ impl ItemsGraph {
                     };
                     let ongoing_distance = ongoing.distance_from_entry.unwrap_or(usize::MAX);
                     let compare_distance = compare.distance_from_entry.unwrap_or(usize::MAX);
-                    // let ongoing_data = (ongoing.distance_from_entry, ongoing.output.resource_staging.iter().find(|r| r.erased_resource.0.type_id() == resource_id).unwrap());
-                    // let compare_data = (compare.distance_from_entry, compare.output.resource_staging.iter().find(|r| r.erased_resource.0.type_id() == resource_id).unwrap());
-                    // match (ongoing_data, compare_data) {
-                    //     ((Some(x), a), (Some(y), b)) => {},
-                    //     ((None, _), (Some(y), b)) => {
-
-                    //     }
-
-                    // }
+                    if compare_distance < ongoing_distance {
+                        ongoing_candidate = compare_candidate;
+                    } else if ongoing_distance == compare_distance
+                        && let Some(current_instance) = ongoing.output.get_resource(resource_id)
+                        && current_instance.is_default
+                    {
+                        // Identical distance, but the current instance is a default instance.
+                        ongoing_candidate = compare_candidate;
+                    }
                 }
+                self.accepted_resource_sources
+                    .insert(resource_id, *ongoing_candidate);
             }
             if !no_candidates.is_empty() {
                 return Err(PluginResolutionError::NoResourceCandidate(no_candidates));
