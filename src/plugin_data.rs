@@ -366,7 +366,7 @@ pub(crate) struct PluginTypeId(TypeId);
 
 pub(crate) struct MessageRegistration {
     // A function that actually registers the message type with the App/World.
-    registration_func: fn(&mut App),
+    pub(crate) registration_func: fn(&mut App),
 }
 
 impl MessageRegistration {

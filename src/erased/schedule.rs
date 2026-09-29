@@ -62,7 +62,7 @@ impl ErasedScheduleLabel {
 }
 
 pub(crate) struct StagedScheduleLabel {
-    staged: Staged<ErasedScheduleLabel>,
+    pub(crate) staged: Staged<ErasedScheduleLabel>,
 }
 
 impl StagedScheduleLabel {

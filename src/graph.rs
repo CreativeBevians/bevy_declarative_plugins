@@ -347,7 +347,7 @@ impl PluginRegistrationGraph {
 
 /// The final order for things to be registered in.
 #[allow(unused)]
-pub(crate) struct OrderedPluginItems(Vec<DeclrItem>);
+pub(crate) struct OrderedPluginItems(pub(crate) Vec<DeclrItem>);
 
 pub(crate) enum PluginResolutionError {
     NoResourceCandidate(Vec<(TypeId, &'static str)>),
@@ -524,4 +524,27 @@ pub(crate) enum DeclrItem {
     ScheduleLabel(StagedScheduleLabel),
     Observer(Observer),
     Resource(StagedResource),
+}
+
+impl DeclrItem {
+    pub fn apply_to_app(self, app: &mut bevy_app::App) {
+        match self {
+            DeclrItem::Message(message_registration) => {
+                (message_registration.registration_func)(app)
+            }
+            DeclrItem::System(staged_system) => {
+                staged_system.staging.apply_to_world(app.world_mut());
+            }
+            DeclrItem::ScheduleLabel(staged_schedule_label) => {
+                staged_schedule_label.staged.apply_to_world(app.world_mut());
+            }
+            DeclrItem::Observer(observer) => {
+                app.add_observer(observer);
+            }
+            DeclrItem::Resource(staged_resource) => (staged_resource.unerase_and_insert)(
+                app.world_mut(),
+                staged_resource.erased_resource,
+            ),
+        }
+    }
 }

@@ -32,7 +32,13 @@ impl DeclrAppExt for App {
         let graph = entry_point_list.expand()?;
         if graph.can_build() {
             match graph.try_build() {
-                Ok(graph_2) => {}
+                Ok(mut graph_2) => {
+                    let _ = graph_2.compute_resources();
+                    let final_order = graph_2.final_items_order()?;
+                    for item in final_order.0 {
+                        item.apply_to_app(self);
+                    }
+                }
                 Err(_) => todo!(),
             }
         }
