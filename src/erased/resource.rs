@@ -1,4 +1,4 @@
-use std::any::type_name;
+use std::any::{TypeId, type_name};
 
 use bevy_ecs::{resource::Resource, world::World};
 
@@ -7,6 +7,9 @@ use crate::{approval::Approval, metadata_ptr::MetadataPtr};
 /// A type erased [`Resource`], implemented using a [`MetadataPtr`]. This is
 /// necessary due to [`Resource`] not being dyn compatible.
 pub(crate) struct ErasedResource(pub(crate) MetadataPtr);
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub(crate) struct ResourceTypeId(pub(crate) TypeId);
 
 /// Data structure to get around the fact that Resource is not dyn compatible.
 pub(crate) struct StagedResource {

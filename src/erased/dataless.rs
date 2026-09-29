@@ -13,9 +13,8 @@ pub struct ErasedDataless<O> {
 
 pub enum RegistrationOrder {
     Messages,
-    Events,
-    Observers,
     Schedules,
+    Observers,
     Resources,
     Systems,
 }

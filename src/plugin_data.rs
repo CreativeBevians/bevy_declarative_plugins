@@ -1,6 +1,7 @@
 #[cfg(feature = "state")]
 use bevy_ecs::world::FromWorld;
 use bevy_ecs::{
+    event::Event,
     message::Message,
     observer::{IntoObserver, Observer},
     resource::Resource,
@@ -24,6 +25,7 @@ use crate::{
         resource::StagedResource,
         schedule::{StagedScheduleLabel, StagedSystem},
     },
+    graph::DeclrItem,
 };
 
 /// A list of plugin dependencies for a particular [`PluginOutput`].
@@ -99,6 +101,52 @@ impl<D> PluginOutput<D> {
 
     pub(crate) fn get_resource(&self, resource_id: TypeId) -> Option<&StagedResource> {
         self.resource_staging.get(&resource_id)
+    }
+
+    pub(crate) fn extract_resource(&mut self, resource_id: TypeId) -> Option<StagedResource> {
+        self.resource_staging.remove(&resource_id)
+    }
+
+    pub(crate) fn extract_resources_into_buffer(
+        &mut self,
+        buffer: &mut Vec<DeclrItem>,
+        map: &HashMap<TypeId, PluginTypeId>,
+    ) {
+        let to_extract: Vec<_> = self
+            .resource_staging
+            .keys()
+            .filter_map(|resource_id| {
+                let plugin_id = map.get(resource_id)?;
+                (*plugin_id == self.working_plugin).then_some(resource_id)
+            })
+            .cloned()
+            .collect();
+        for extract in to_extract {
+            let Some(resource) = self.extract_resource(extract) else {
+                continue;
+            };
+            buffer.push(DeclrItem::Resource(resource));
+        }
+    }
+
+    pub(crate) fn extract_messages_into_buffer(&mut self, buffer: &mut Vec<DeclrItem>) {
+        buffer.extend(
+            self.messages
+                .drain()
+                .map(|(_, message_type)| DeclrItem::Message(message_type)),
+        );
+    }
+
+    pub(crate) fn extract_observers_into_buffer(&mut self, buffer: &mut Vec<DeclrItem>) {
+        buffer.extend(self.observers.drain(..).map(DeclrItem::Observer));
+    }
+
+    pub(crate) fn extract_schedules_into_buffer(&mut self, buffer: &mut Vec<DeclrItem>) {
+        buffer.extend(self.schedule_labels.drain(..).map(DeclrItem::ScheduleLabel));
+    }
+
+    pub(crate) fn extract_systems_into_buffer(&mut self, buffer: &mut Vec<DeclrItem>) {
+        buffer.extend(self.schedules.schedules.drain(..).map(DeclrItem::System));
     }
 }
 
@@ -334,7 +382,7 @@ impl MessageRegistration {
 pub(crate) struct MergeableSchedule {
     // This isn't ideal, as it does put the 'static requirements on systems,
     // but it will do for now.
-    schedules: Vec<StagedSystem>,
+    pub(crate) schedules: Vec<StagedSystem>,
 }
 
 impl MergeableSchedule {

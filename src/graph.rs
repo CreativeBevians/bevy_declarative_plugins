@@ -1,3 +1,4 @@
+use bevy_ecs::observer::Observer;
 use bevy_platform::collections::{HashMap, HashSet};
 use core::{any::TypeId, convert::identity, hash::Hash};
 use std::{
@@ -380,6 +381,11 @@ impl ItemsGraph {
         }
     }
 
+    pub(crate) fn nodes_mut(&mut self) -> impl Iterator<Item = &mut PluginNode> {
+        self.sources.values_mut()
+    }
+
+    /// Establish candidates for which resources to use.
     pub(crate) fn compute_resources(&mut self) -> Result<(), PluginResolutionError> {
         self.accepted_resource_sources.drain();
         let mut conflicting_sources: HashMap<TypeId, (BTreeSet<PluginTypeId>, &'static str)> =
@@ -392,6 +398,7 @@ impl ItemsGraph {
                 entry.1 = resource.1.resource_name;
             }
         }
+        // If there are any resources without valid candidates, we error.
         let mut no_candidates = Vec::new();
         for (resource_id, (mut source_ids, resource_name)) in conflicting_sources {
             // We use `source_ids` as a list of candidates, removing ones that have hard conflicts as we go.
@@ -477,8 +484,30 @@ impl ItemsGraph {
         Ok(())
     }
 
+    /// Build out the final registration graph from the registration
+    /// information we've constructed so far.
     pub(crate) fn final_items_order(&mut self) -> Result<OrderedPluginItems, ()> {
-        Err(())
+        let mut buffer = Vec::new();
+        self.nodes_mut().for_each(|node| {
+            node.output.extract_messages_into_buffer(&mut buffer);
+        });
+        self.nodes_mut().for_each(|node| {
+            node.output.extract_schedules_into_buffer(&mut buffer);
+        });
+        self.nodes_mut().for_each(|node| {
+            node.output.extract_observers_into_buffer(&mut buffer);
+        });
+        self.nodes_mut().for_each(|node| {
+            node.output.extract_systems_into_buffer(&mut buffer);
+        });
+        let mut map = HashMap::new();
+        std::mem::swap(&mut map, &mut self.accepted_resource_sources);
+        self.nodes_mut().for_each(|node| {
+            node.output.extract_resources_into_buffer(&mut buffer, &map);
+        });
+        // Swap back in case we use this in debugging / analysis.
+        std::mem::swap(&mut map, &mut self.accepted_resource_sources);
+        Ok(OrderedPluginItems(buffer))
     }
 }
 
@@ -490,9 +519,9 @@ pub(crate) struct DeclrSet {
 /// Items that can be added to a world.
 #[allow(unused)]
 pub(crate) enum DeclrItem {
+    Message(MessageRegistration),
     System(StagedSystem),
     ScheduleLabel(StagedScheduleLabel),
-    Event(()),
-    Observer(()),
-    State(()),
+    Observer(Observer),
+    Resource(StagedResource),
 }
