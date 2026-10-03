@@ -1,7 +1,4 @@
-#[cfg(feature = "state")]
-use bevy_ecs::world::FromWorld;
 use bevy_ecs::{
-    event::Event,
     message::Message,
     observer::{IntoObserver, Observer},
     resource::Resource,
@@ -15,14 +12,14 @@ use core::{
     any::{Any, TypeId},
     hash::Hash,
 };
-use std::{boxed::Box, marker::PhantomData, vec::Vec};
+use std::{boxed::Box, vec::Vec};
 
 use crate::{
     App, DeclarativePlugin,
     approval::Approval,
     erased::{
-        dataless::{ErasedDataless, OrderedDataless},
-        resource::StagedResource,
+        dataless::ErasedDataless,
+        resource::{ErasedResource, StagedResource},
         schedule::{StagedScheduleLabel, StagedSystem},
     },
     graph::DeclrItem,
@@ -220,7 +217,7 @@ impl PluginOutput {
         &mut self,
         approval: impl Fn(&R) -> bool + 'static,
     ) -> &mut Self {
-        let Some(resource) = StagedResource::new(R::default(), true, |_| true) else {
+        let Some(resource) = StagedResource::new(R::default(), true, approval) else {
             return self;
         };
         self.resource_staging.insert(TypeId::of::<R>(), resource);
@@ -264,6 +261,21 @@ impl PluginOutput {
     }
 }
 
+pub struct ResourceBuilder<'a, R> {
+    config: Option<R>,
+    approval: Option<Approval<ErasedResource>>,
+    output: &'a mut PluginOutput,
+}
+
+impl<'a, R> ResourceBuilder<'a, R> {
+    pub fn build(self) -> &'a mut PluginOutput
+    where
+        R: Resource,
+    {
+        self.output
+    }
+}
+
 pub struct DependencyBuilder<'a, P> {
     config: Option<P>,
     approval: Option<Approval<Box<dyn DeclarativePlugin>>>,
@@ -293,15 +305,8 @@ impl<'a, P> DependencyBuilder<'a, P> {
         output
     }
 
-    pub fn build_and_next<P2>(self) -> DependencyBuilder<'a, P2>
-    where
-        P: DeclarativePlugin,
-        P2: DeclarativePlugin,
-    {
-        self.build().dependency_builder()
-    }
-
-    pub fn with_config(&mut self, config: P) -> &mut Self
+    #[must_use]
+    pub fn with_config(mut self, config: P) -> Self
     where
         P: DeclarativePlugin,
     {
@@ -309,10 +314,8 @@ impl<'a, P> DependencyBuilder<'a, P> {
         self
     }
 
-    pub fn with_approval<F: for<'b> Fn(&'b P) -> bool + 'static>(
-        &mut self,
-        approval: F,
-    ) -> &mut Self
+    #[must_use]
+    pub fn with_approval<F: for<'b> Fn(&'b P) -> bool + 'static>(mut self, approval: F) -> Self
     where
         P: DeclarativePlugin,
     {
@@ -394,9 +397,5 @@ impl MergeableSchedule {
         self.schedules
             .push(StagedSystem::new(schedule, systems).ok_or(())?);
         Ok(())
-    }
-
-    pub(crate) fn merge_simple(&mut self, other: Self) {
-        self.schedules.extend(other.schedules);
     }
 }

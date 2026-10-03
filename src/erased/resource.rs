@@ -1,8 +1,11 @@
-use std::any::{TypeId, type_name};
+use std::{
+    any::{TypeId, type_name},
+    default,
+};
 
 use bevy_ecs::{resource::Resource, world::World};
 
-use crate::{approval::Approval, metadata_ptr::MetadataPtr};
+use crate::{approval::Approval, erased::schedule::Staged, metadata_ptr::MetadataPtr};
 
 /// A type erased [`Resource`], implemented using a [`MetadataPtr`]. This is
 /// necessary due to [`Resource`] not being dyn compatible.
@@ -13,10 +16,7 @@ pub(crate) struct ResourceTypeId(pub(crate) TypeId);
 
 /// Data structure to get around the fact that Resource is not dyn compatible.
 pub(crate) struct StagedResource {
-    /// The type-erased resource.
-    pub(crate) erased_resource: ErasedResource,
-    /// Function that un-erases the resource and adds it to a given world.
-    pub(crate) unerase_and_insert: fn(&mut World, ErasedResource),
+    staged: Staged<ErasedResource>,
     /// Function that un-erases the resource and check if it meets the plugin's requirements.
     pub(crate) approval_from_plugin: Approval<ErasedResource>,
     /// If the staged resource is a default, we care about it less than any given
@@ -31,11 +31,6 @@ impl StagedResource {
         check_ok: impl Fn(&R) -> bool + 'static,
     ) -> Option<Self> {
         Some(StagedResource {
-            erased_resource: ErasedResource(MetadataPtr::new(resource)?),
-            unerase_and_insert: |world, erased| match erased.0.try_reverse_erase::<R>() {
-                Ok(resource) => world.insert_resource(resource),
-                Err(_) => {}
-            },
             approval_from_plugin: Approval::new(move |erased: &ErasedResource| {
                 erased
                     .0
@@ -45,6 +40,34 @@ impl StagedResource {
             }),
             is_default,
             resource_name: type_name::<R>(),
+            staged: Staged {
+                erased: ErasedResource(MetadataPtr::new(resource)?),
+                unerase_and_apply_to_world: |world, erased| match erased.0.try_reverse_erase::<R>()
+                {
+                    Ok(resource) => world.insert_resource(resource),
+                    Err(_) => {}
+                },
+            },
         })
+    }
+
+    fn new_with_default<R: Resource + Default>(
+        check_ok: impl Fn(&R) -> bool + 'static,
+    ) -> Option<Self> {
+        Self::new(R::default(), true, check_ok)
+    }
+
+    pub(crate) fn apply_to_world(self, world: &mut World) {
+        self.staged.apply_to_world(world);
+    }
+
+    pub(crate) fn erased(&self) -> &ErasedResource {
+        &self.staged.erased
+    }
+
+    pub(crate) fn erased_type_id(&self) -> ResourceTypeId {
+        // SAFETY: We know this is a Resource as the constructor requires R to
+        // be a resource.
+        ResourceTypeId(self.staged.erased.0.erased_type_id())
     }
 }

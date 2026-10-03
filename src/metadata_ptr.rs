@@ -73,7 +73,7 @@ impl MetadataPtr {
         data_read
     }
 
-    pub fn inner_type_id(&self) -> TypeId {
+    pub fn erased_type_id(&self) -> TypeId {
         self.type_id
     }
 }

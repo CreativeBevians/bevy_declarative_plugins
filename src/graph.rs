@@ -5,6 +5,7 @@ use std::{
     any::Any,
     boxed::Box,
     collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt::Debug,
     vec::Vec,
 };
 
@@ -19,11 +20,23 @@ use crate::{
 };
 
 /// A list of "entry point" plugins and their outputs. This gets expanded into a graph.
-pub(crate) struct PluginList {
-    nodes: Vec<(Box<dyn DeclarativePlugin>, PluginOutput)>,
+pub struct PluginList {
+    pub(crate) nodes: Vec<(Box<dyn DeclarativePlugin>, PluginOutput)>,
 }
 
 impl PluginList {
+    pub(crate) fn extend(&mut self, other: Self) -> &mut Self {
+        self.nodes.extend(other.nodes);
+        self
+    }
+
+    pub(crate) fn extend_with<P: DeclarativePlugin>(&mut self, plugin: P) -> &mut Self {
+        let mut output = PluginOutput::new::<P>();
+        plugin.build(&mut output);
+        self.nodes.push((Box::new(plugin), output));
+        self
+    }
+
     /// Expand the list of entry point plugins into a full graph. Ignores
     /// recurring ZSTs.
     pub(crate) fn expand(mut self) -> Result<PluginRegistrationGraph, ()> {
@@ -35,15 +48,21 @@ impl PluginList {
         }
         let mut dependency_queue = VecDeque::new();
         for (item, output) in self.nodes {
-            if output.is_zero_sized_optimizable
-                && !zst_already_expanded.contains_key(&output.working_plugin)
-            {
+            let is_new_zst = output.is_zero_sized_optimizable
+                && !zst_already_expanded.contains_key(&output.working_plugin);
+            if is_new_zst || !output.is_zero_sized_optimizable {
                 let type_id = output.working_plugin;
                 let (reg_id, dependencies) = graph.insert_node(item, output);
-                dependency_queue.extend(dependencies.0.into_iter().map(|d| (reg_id, d)));
-                zst_already_expanded.insert(type_id, reg_id);
-            } else if !output.is_zero_sized_optimizable {
-                unimplemented!()
+                dependency_queue.extend(dependencies.0.into_iter().map(|d| {
+                    println!("{reg_id:?}");
+                    (reg_id, d)
+                }));
+                if is_new_zst {
+                    // If it's a ZST, we need to add it to the list of known ones.
+                    zst_already_expanded.insert(type_id, reg_id);
+                }
+            } else {
+                // This should be "ZSTs already registered." Do nothing.
             }
         }
         // TODO: detect cycles in expansion + stop adding when "expanded enough" + solved.
@@ -140,6 +159,16 @@ pub(crate) struct PluginRegistrationGraph {
     dependency_edges: HashMap<RegistrationId, Vec<PluginTypeId>>,
 }
 
+impl Debug for PluginRegistrationGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginRegistrationGraph")
+            .field("registration_counter", &self.registration_counter)
+            .field("nodes", &self.nodes.len())
+            .field("dependency_edges", &self.dependency_edges)
+            .finish()
+    }
+}
+
 impl PluginRegistrationGraph {
     fn new_id(&mut self, plugin_id: PluginTypeId) -> RegistrationId {
         let id = RegistrationId(self.registration_counter, plugin_id);
@@ -176,7 +205,7 @@ impl PluginRegistrationGraph {
     }
 
     pub(crate) fn try_build(self) -> Result<ItemsGraph, Self> {
-        unimplemented!()
+        ItemsGraph::new(self)
     }
 
     pub(crate) fn can_build(&self) -> bool {
@@ -345,10 +374,6 @@ impl PluginRegistrationGraph {
     }
 }
 
-/// The final order for things to be registered in.
-#[allow(unused)]
-pub(crate) struct OrderedPluginItems(pub(crate) Vec<DeclrItem>);
-
 pub(crate) enum PluginResolutionError {
     NoResourceCandidate(Vec<(TypeId, &'static str)>),
     NoPluginCandidate(Vec<(PluginTypeId, &'static str)>),
@@ -433,7 +458,7 @@ impl ItemsGraph {
                                         .iter()
                                         .find(|resource| *resource.0 == resource_id)
                                 })
-                            && approval.approves(&staged_resource.1.erased_resource)
+                            && approval.approves(staged_resource.1.erased())
                         {
                             // We can keep this as the following has been met:
                             // 1. It's not already marked for removal
@@ -511,11 +536,6 @@ impl ItemsGraph {
     }
 }
 
-pub(crate) struct DeclrSet {
-    messages: HashMap<TypeId, MessageRegistration>,
-    resources: HashMap<TypeId, StagedResource>,
-}
-
 /// Items that can be added to a world.
 #[allow(unused)]
 pub(crate) enum DeclrItem {
@@ -541,10 +561,47 @@ impl DeclrItem {
             DeclrItem::Observer(observer) => {
                 app.add_observer(observer);
             }
-            DeclrItem::Resource(staged_resource) => (staged_resource.unerase_and_insert)(
-                app.world_mut(),
-                staged_resource.erased_resource,
-            ),
+            DeclrItem::Resource(staged_resource) => staged_resource.apply_to_world(app.world_mut()),
         }
+    }
+}
+
+/// The final order for things to be registered in.
+pub(crate) struct OrderedPluginItems(pub(crate) Vec<DeclrItem>);
+
+impl OrderedPluginItems {
+    pub(crate) fn messages(&self) -> impl Iterator<Item = &MessageRegistration> {
+        self.0.iter().filter_map(|item| match item {
+            DeclrItem::Message(message) => Some(message),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn systems(&self) -> impl Iterator<Item = &StagedSystem> {
+        self.0.iter().filter_map(|item| match item {
+            DeclrItem::System(system) => Some(system),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn labels(&self) -> impl Iterator<Item = &StagedScheduleLabel> {
+        self.0.iter().filter_map(|item| match item {
+            DeclrItem::ScheduleLabel(label) => Some(label),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn observers(&self) -> impl Iterator<Item = &Observer> {
+        self.0.iter().filter_map(|item| match item {
+            DeclrItem::Observer(observer) => Some(observer),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn resources(&self) -> impl Iterator<Item = &StagedResource> {
+        self.0.iter().filter_map(|item| match item {
+            DeclrItem::Resource(resource) => Some(resource),
+            _ => None,
+        })
     }
 }
