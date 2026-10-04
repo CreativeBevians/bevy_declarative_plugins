@@ -166,7 +166,7 @@ mod test {
             output
                 .dependency_builder()
                 .with_config(NonZstPluginE { num: 4 })
-                .with_approval(|e| e.num % 2 == 0)
+                .with_approval(|e| dbg!(e.num % 2 == 0))
                 .build();
         }
     }
@@ -179,7 +179,7 @@ mod test {
             output
                 .dependency_builder()
                 .with_config(NonZstPluginE { num: 40 })
-                .with_approval(|e| e.num > 30)
+                .with_approval(|e| dbg!(e.num > 30))
                 .build();
         }
     }
@@ -210,6 +210,38 @@ mod test {
         let order = graph.final_items_order().unwrap();
         assert_eq!(order.systems().count(), 1);
     }
+
+    struct ContraDependencyJ;
+
+    impl DeclarativePlugin for ContraDependencyJ {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output
+                .dependency_builder()
+                .with_config(NonZstPluginE { num: 2 })
+                .with_approval(|j| j.num == 2)
+                .build();
+        }
+    }
+
+    #[test]
+    fn should_fail_dependency() {
+        let list = (MessierDependenciesH, ContraDependencyJ).get_output();
+        let expanded = list.expand();
+        assert_matches!(expanded, Ok(_));
+        let expanded = expanded.unwrap();
+        let mut graph = expanded.try_build();
+        assert_matches!(graph, Err(_))
+    }
+
+    struct ResourceCheckK;
+
+    impl DeclarativePlugin for ResourceCheckK {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output;
+        }
+    }
+
+    struct ResourceCheckL;
 }
 
 pub trait EntryPoints {

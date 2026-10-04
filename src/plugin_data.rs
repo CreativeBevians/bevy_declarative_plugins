@@ -12,14 +12,14 @@ use core::{
     any::{Any, TypeId},
     hash::Hash,
 };
-use std::{boxed::Box, vec::Vec};
+use std::{any::type_name, boxed::Box, vec::Vec};
 
 use crate::{
     App, DeclarativePlugin,
     approval::Approval,
     erased::{
         dataless::ErasedDataless,
-        resource::{ErasedResource, StagedResource},
+        resource::{ErasedResource, ResourceTypeId, StagedResource},
         schedule::{StagedScheduleLabel, StagedSystem},
     },
     graph::DeclrItem,
@@ -46,6 +46,7 @@ pub struct PluginOutput<D = PluginDependencies> {
     pub(crate) is_zero_sized_optimizable: bool,
     /// Plugin type ID (used to build edges later)
     pub(crate) working_plugin: PluginTypeId,
+    pub(crate) plugin_name: &'static str,
     /// Observers registered by this plugin.
     pub(crate) observers: Vec<Observer>,
     /// The schedule graph for this plugin (to be merged with others later)
@@ -54,7 +55,7 @@ pub struct PluginOutput<D = PluginDependencies> {
     /// Message storage
     pub(crate) messages: HashMap<TypeId, MessageRegistration>,
     /// Resource storage
-    pub(crate) resource_staging: HashMap<TypeId, StagedResource>,
+    pub(crate) resource_staging: HashMap<ResourceTypeId, StagedResource>,
     pub(crate) plugin_approval: HashMap<PluginTypeId, Approval<Box<dyn DeclarativePlugin>>>,
     #[cfg(feature = "state")]
     pub(crate) states: Vec<ErasedDataless<()>>,
@@ -77,6 +78,7 @@ impl<D> PluginOutput<D> {
             dependencies,
             plugin_approval,
             schedule_labels,
+            plugin_name,
         } = self;
         (
             PluginOutput {
@@ -91,23 +93,27 @@ impl<D> PluginOutput<D> {
                 states,
                 dependencies: (),
                 schedule_labels,
+                plugin_name,
             },
             dependencies,
         )
     }
 
-    pub(crate) fn get_resource(&self, resource_id: TypeId) -> Option<&StagedResource> {
+    pub(crate) fn get_resource(&self, resource_id: ResourceTypeId) -> Option<&StagedResource> {
         self.resource_staging.get(&resource_id)
     }
 
-    pub(crate) fn extract_resource(&mut self, resource_id: TypeId) -> Option<StagedResource> {
+    pub(crate) fn extract_resource(
+        &mut self,
+        resource_id: ResourceTypeId,
+    ) -> Option<StagedResource> {
         self.resource_staging.remove(&resource_id)
     }
 
     pub(crate) fn extract_resources_into_buffer(
         &mut self,
         buffer: &mut Vec<DeclrItem>,
-        map: &HashMap<TypeId, PluginTypeId>,
+        map: &HashMap<ResourceTypeId, PluginTypeId>,
     ) {
         let to_extract: Vec<_> = self
             .resource_staging
@@ -149,12 +155,13 @@ impl<D> PluginOutput<D> {
 
 impl PluginOutput {
     /// Create a plugin output structure for a given plugin type.
-    pub(crate) fn new<P: 'static>() -> Self {
+    pub(crate) fn new<P: DeclarativePlugin + 'static>() -> Self {
         Self {
             // This is set by App bookkeeping.
             is_entry_point: false,
             is_zero_sized_optimizable: size_of::<P>() == 0,
-            working_plugin: PluginTypeId(TypeId::of::<P>()),
+            working_plugin: PluginTypeId::of::<P>(),
+            plugin_name: type_name::<P>(),
             observers: Vec::new(),
             schedules: MergeableSchedule {
                 schedules: Vec::new(),
@@ -220,7 +227,8 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(R::default(), true, approval) else {
             return self;
         };
-        self.resource_staging.insert(TypeId::of::<R>(), resource);
+        self.resource_staging
+            .insert(ResourceTypeId::of::<R>(), resource);
         self
     }
 
@@ -228,7 +236,8 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(resource, false, |_| true) else {
             return self;
         };
-        self.resource_staging.insert(TypeId::of::<R>(), resource);
+        self.resource_staging
+            .insert(ResourceTypeId::of::<R>(), resource);
         self
     }
 
@@ -240,7 +249,8 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(resource, false, approval) else {
             return self;
         };
-        self.resource_staging.insert(TypeId::of::<R>(), resource);
+        self.resource_staging
+            .insert(ResourceTypeId::of::<R>(), resource);
         self
     }
 
@@ -249,7 +259,8 @@ impl PluginOutput {
         let Some(resource) = StagedResource::new(resource, false, |_| true) else {
             return self;
         };
-        self.resource_staging.insert(TypeId::of::<R>(), resource);
+        self.resource_staging
+            .insert(ResourceTypeId::of::<R>(), resource);
         self
     }
     pub fn dependency_builder<'a, P>(&'a mut self) -> DependencyBuilder<'a, P> {
@@ -272,8 +283,18 @@ impl<'a, R> ResourceBuilder<'a, R> {
     where
         R: Resource,
     {
-        self.output
+        let type_id = ResourceTypeId::of::<R>();
+        let Self {
+            config,
+            approval,
+            output,
+        } = self;
+        output
     }
+
+    pub fn with_config() {}
+
+    pub fn with_approval() {}
 }
 
 pub struct DependencyBuilder<'a, P> {
@@ -287,12 +308,13 @@ impl<'a, P> DependencyBuilder<'a, P> {
     where
         P: DeclarativePlugin,
     {
-        let type_id = PluginTypeId(TypeId::of::<P>());
+        let type_id = PluginTypeId::of::<P>();
         let Self {
             config,
             approval,
             output,
         } = self;
+        output.plugin_approval.remove(&type_id);
         if let Some(approval) = approval {
             output.plugin_approval.insert(type_id, approval);
         }
@@ -319,12 +341,14 @@ impl<'a, P> DependencyBuilder<'a, P> {
     where
         P: DeclarativePlugin,
     {
-        self.approval = Some(Approval::new(move |dyn_plugin| {
-            let Some(plugin) = <dyn Any>::downcast_ref::<P>(dyn_plugin) else {
-                return false;
-            };
-            approval(plugin)
-        }));
+        self.approval = Some(Approval::new(
+            move |dyn_plugin: &Box<dyn DeclarativePlugin>| {
+                let Some(plugin) = <dyn Any>::downcast_ref::<P>(dyn_plugin.as_ref()) else {
+                    return false;
+                };
+                approval(plugin)
+            },
+        ));
         self
     }
 }
@@ -351,14 +375,14 @@ impl PluginDependency {
             })
         }));
         PluginDependency {
-            type_id: PluginTypeId(TypeId::of::<P>()),
+            type_id: PluginTypeId::of::<P>(),
             data,
         }
     }
 
     pub fn new<P: DeclarativePlugin + 'static>() -> Self {
         Self {
-            type_id: PluginTypeId(TypeId::of::<P>()),
+            type_id: PluginTypeId::of::<P>(),
             data: None,
         }
     }
@@ -366,6 +390,12 @@ impl PluginDependency {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub(crate) struct PluginTypeId(TypeId);
+
+impl PluginTypeId {
+    pub(crate) fn of<P: DeclarativePlugin>() -> Self {
+        Self(TypeId::of::<P>())
+    }
+}
 
 pub(crate) struct MessageRegistration {
     // A function that actually registers the message type with the App/World.

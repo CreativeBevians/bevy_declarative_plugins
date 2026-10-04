@@ -13,7 +13,7 @@ use crate::{
     DeclarativePlugin, PluginOutput,
     approval::Approval,
     erased::{
-        resource::StagedResource,
+        resource::{ResourceTypeId, StagedResource},
         schedule::{StagedScheduleLabel, StagedSystem},
     },
     plugin_data::{MessageRegistration, PluginDependency, PluginTypeId},
@@ -153,6 +153,17 @@ pub(crate) struct PluginNode {
     pub(crate) distance_from_entry: Option<usize>,
 }
 
+impl Debug for PluginNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginNode")
+            .field("registration_id", &self.registration_id)
+            .field("plugin_data", &"{...}")
+            .field("output", &"{...}")
+            .field("distance_from_entry", &self.distance_from_entry)
+            .finish()
+    }
+}
+
 pub(crate) struct PluginRegistrationGraph {
     registration_counter: usize,
     nodes: HashMap<PluginTypeId, Vec<PluginNode>>,
@@ -204,7 +215,7 @@ impl PluginRegistrationGraph {
         (registration_id, dependencies)
     }
 
-    pub(crate) fn try_build(self) -> Result<ItemsGraph, Self> {
+    pub(crate) fn try_build(self) -> Result<ItemsGraph, (ItemGraphError, Self)> {
         ItemsGraph::new(self)
     }
 
@@ -270,16 +281,25 @@ impl PluginRegistrationGraph {
 
     pub(crate) fn candidate_exists(&self, plugin_id: PluginTypeId) -> Result<RegistrationId, ()> {
         let mut working = None;
+        // We have two loops here, the outer loop is to go through each candidate.
+        // The inner loop is to find out if there is any version of this
         'outer: for candidate_instance in self.instances(plugin_id) {
             let candidate = candidate_instance.registration_id;
+            // For each plugin with a dependency, see if each of those dependents agree on this configuration.
             for depends_on in self.has_approvals_for_plugin(plugin_id) {
-                if let Some(approval) = depends_on.output.plugin_approval.get(&plugin_id)
-                    && approval.approves(&candidate_instance.plugin_data)
-                {
-                    continue;
-                } else {
-                    // abandon current candidate, and move onto the next one.
-                    continue 'outer;
+                println!("Lol");
+                match depends_on.output.plugin_approval.get(&plugin_id) {
+                    // If an approval function exists, and it approves, continue.
+                    Some(approval) => {
+                        if approval.approves(&candidate_instance.plugin_data) {
+                            continue;
+                        } else {
+                            continue 'outer;
+                        }
+                    }
+                    // A dependent *should* have an approval function, but if it doesn't
+                    // then we assume it's fine.
+                    None => continue,
                 }
             }
             match &working.and_then(|working| self.get(working)) {
@@ -375,19 +395,27 @@ impl PluginRegistrationGraph {
 }
 
 pub(crate) enum PluginResolutionError {
-    NoResourceCandidate(Vec<(TypeId, &'static str)>),
+    NoResourceCandidate(Vec<(ResourceTypeId, &'static str)>),
     NoPluginCandidate(Vec<(PluginTypeId, &'static str)>),
 }
 
-/// A graph
+#[derive(Debug)]
+pub enum ItemGraphError {
+    FailedBuildCheck,
+}
+
+/// A graph where we've already decided on specific plugin outputs to use per plugin type.
+#[derive(Debug)]
 pub(crate) struct ItemsGraph {
     sources: HashMap<PluginTypeId, PluginNode>,
     edges: HashMap<PluginTypeId, HashSet<PluginTypeId>>,
-    accepted_resource_sources: HashMap<TypeId, PluginTypeId>,
+    accepted_resource_sources: HashMap<ResourceTypeId, PluginTypeId>,
 }
 
 impl ItemsGraph {
-    pub(crate) fn new(mut graph: PluginRegistrationGraph) -> Result<Self, PluginRegistrationGraph> {
+    pub(crate) fn new(
+        mut graph: PluginRegistrationGraph,
+    ) -> Result<Self, (ItemGraphError, PluginRegistrationGraph)> {
         if graph.can_build() {
             let (nodes, edges) = graph.extract_candidates().unwrap();
             Ok(Self {
@@ -402,7 +430,7 @@ impl ItemsGraph {
                 accepted_resource_sources: HashMap::new(),
             })
         } else {
-            Err(graph)
+            Err((ItemGraphError::FailedBuildCheck, graph))
         }
     }
 
@@ -413,8 +441,10 @@ impl ItemsGraph {
     /// Establish candidates for which resources to use.
     pub(crate) fn compute_resources(&mut self) -> Result<(), PluginResolutionError> {
         self.accepted_resource_sources.drain();
-        let mut conflicting_sources: HashMap<TypeId, (BTreeSet<PluginTypeId>, &'static str)> =
-            HashMap::new();
+        let mut conflicting_sources: HashMap<
+            ResourceTypeId,
+            (BTreeSet<PluginTypeId>, &'static str),
+        > = HashMap::new();
         for (source, node) in &self.sources {
             for resource in &node.output.resource_staging {
                 let resource_id = resource.0;

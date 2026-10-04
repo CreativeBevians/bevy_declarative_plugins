@@ -14,6 +14,12 @@ pub(crate) struct ErasedResource(pub(crate) MetadataPtr);
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub(crate) struct ResourceTypeId(pub(crate) TypeId);
 
+impl ResourceTypeId {
+    pub(crate) fn of<R: Resource>() -> Self {
+        Self(TypeId::of::<R>())
+    }
+}
+
 /// Data structure to get around the fact that Resource is not dyn compatible.
 pub(crate) struct StagedResource {
     staged: Staged<ErasedResource>,
