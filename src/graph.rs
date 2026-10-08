@@ -1,10 +1,9 @@
 use bevy_ecs::observer::Observer;
 use bevy_platform::collections::{HashMap, HashSet};
-use core::{any::TypeId, convert::identity, hash::Hash};
+use core::{convert::identity, hash::Hash};
 use std::{
-    any::Any,
     boxed::Box,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeSet, VecDeque},
     fmt::Debug,
     vec::Vec,
 };
@@ -360,7 +359,7 @@ impl PluginRegistrationGraph {
     ) -> impl Iterator<Item = &PluginNode> {
         self.nodes().filter_map(move |node| {
             let item = node.output.plugin_approval.get(&plugin_id)?;
-            if item.trivially_true() {
+            if item.is_trivially_true() {
                 return None;
             }
             Some(node)
@@ -485,10 +484,12 @@ impl ItemsGraph {
                                 self.sources.get(source_inner).and_then(|node| {
                                     node.output
                                         .resource_staging
-                                        .iter()
-                                        .find(|resource| *resource.0 == resource_id)
+                                        .get(&resource_id)
                                 })
-                            && approval.approves(staged_resource.1.erased())
+                            // If this staged resource doesn't have an erased resource
+                            // we can't establish it as a candidate anyway.
+                            && let Some(erased) = staged_resource.erased()
+                            && approval.approves(erased)
                         {
                             // We can keep this as the following has been met:
                             // 1. It's not already marked for removal

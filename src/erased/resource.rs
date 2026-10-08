@@ -1,7 +1,4 @@
-use std::{
-    any::{TypeId, type_name},
-    default,
-};
+use std::any::{TypeId, type_name};
 
 use bevy_ecs::{resource::Resource, world::World};
 
@@ -22,7 +19,8 @@ impl ResourceTypeId {
 
 /// Data structure to get around the fact that Resource is not dyn compatible.
 pub(crate) struct StagedResource {
-    staged: Staged<ErasedResource>,
+    staged: Staged<Option<ErasedResource>>,
+    type_id: ResourceTypeId,
     /// Function that un-erases the resource and check if it meets the plugin's requirements.
     pub(crate) approval_from_plugin: Approval<ErasedResource>,
     /// If the staged resource is a default, we care about it less than any given
@@ -32,48 +30,39 @@ pub(crate) struct StagedResource {
 
 impl StagedResource {
     pub(crate) fn new<R: Resource>(
-        resource: R,
+        resource: Option<R>,
         is_default: bool,
-        check_ok: impl Fn(&R) -> bool + 'static,
+        approval: Approval<ErasedResource>,
     ) -> Option<Self> {
         Some(StagedResource {
-            approval_from_plugin: Approval::new(move |erased: &ErasedResource| {
-                erased
-                    .0
-                    .visit::<R, _>(|data| check_ok(data))
-                    // If the types didn't match, we should never veto (it's not this type's problem).
-                    .unwrap_or(true)
-            }),
+            approval_from_plugin: approval,
             is_default,
             resource_name: type_name::<R>(),
             staged: Staged {
-                erased: ErasedResource(MetadataPtr::new(resource)?),
-                unerase_and_apply_to_world: |world, erased| match erased.0.try_reverse_erase::<R>()
-                {
-                    Ok(resource) => world.insert_resource(resource),
-                    Err(_) => {}
+                erased: resource
+                    .and_then(|resource| Some(ErasedResource(MetadataPtr::new(resource)?))),
+                unerase_and_apply_to_world: |world, erased| {
+                    if let Some(erased) = erased {
+                        match erased.0.try_reverse_erase::<R>() {
+                            Ok(resource) => world.insert_resource(resource),
+                            Err(_) => {}
+                        }
+                    }
                 },
             },
+            type_id: ResourceTypeId::of::<R>(),
         })
-    }
-
-    fn new_with_default<R: Resource + Default>(
-        check_ok: impl Fn(&R) -> bool + 'static,
-    ) -> Option<Self> {
-        Self::new(R::default(), true, check_ok)
     }
 
     pub(crate) fn apply_to_world(self, world: &mut World) {
         self.staged.apply_to_world(world);
     }
 
-    pub(crate) fn erased(&self) -> &ErasedResource {
-        &self.staged.erased
+    pub(crate) fn erased(&self) -> Option<&ErasedResource> {
+        self.staged.erased.as_ref()
     }
 
     pub(crate) fn erased_type_id(&self) -> ResourceTypeId {
-        // SAFETY: We know this is a Resource as the constructor requires R to
-        // be a resource.
-        ResourceTypeId(self.staged.erased.0.erased_type_id())
+        self.type_id
     }
 }

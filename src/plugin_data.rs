@@ -206,63 +206,21 @@ impl PluginOutput {
         self
     }
 
-    pub fn require_resource<R: Resource + Default>(&mut self) -> &mut Self {
-        self.require_resource_with_approval(|_: &R| true)
+    #[must_use]
+    pub fn resource_builder<'a, R: Resource>(&'a mut self) -> ResourceBuilder<'a, R> {
+        ResourceBuilder {
+            resource: None,
+            approval: None,
+            output: self,
+            is_default: true,
+        }
     }
 
-    pub fn require_exact_resource<R: Resource + Clone + PartialEq>(
-        &mut self,
-        resource: R,
-    ) -> &mut Self {
-        let cloned = resource.clone();
-        self.require_resource_with_value_and_approval(resource, move |resource: &R| {
-            *resource == cloned
-        })
-    }
-
-    pub fn require_resource_with_approval<R: Resource + Default>(
-        &mut self,
-        approval: impl Fn(&R) -> bool + 'static,
-    ) -> &mut Self {
-        let Some(resource) = StagedResource::new(R::default(), true, approval) else {
-            return self;
-        };
-        self.resource_staging
-            .insert(ResourceTypeId::of::<R>(), resource);
-        self
-    }
-
-    pub fn require_resource_with_value<R: Resource>(&mut self, resource: R) -> &mut Self {
-        let Some(resource) = StagedResource::new(resource, false, |_| true) else {
-            return self;
-        };
-        self.resource_staging
-            .insert(ResourceTypeId::of::<R>(), resource);
-        self
-    }
-
-    pub fn require_resource_with_value_and_approval<R: Resource>(
-        &mut self,
-        resource: R,
-        approval: impl Fn(&R) -> bool + 'static,
-    ) -> &mut Self {
-        let Some(resource) = StagedResource::new(resource, false, approval) else {
-            return self;
-        };
-        self.resource_staging
-            .insert(ResourceTypeId::of::<R>(), resource);
-        self
-    }
-
-    #[deprecated]
     pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
-        let Some(resource) = StagedResource::new(resource, false, |_| true) else {
-            return self;
-        };
-        self.resource_staging
-            .insert(ResourceTypeId::of::<R>(), resource);
-        self
+        self.resource_builder().with_data(resource).build()
     }
+
+    #[must_use]
     pub fn dependency_builder<'a, P>(&'a mut self) -> DependencyBuilder<'a, P> {
         DependencyBuilder {
             config: None,
@@ -273,9 +231,10 @@ impl PluginOutput {
 }
 
 pub struct ResourceBuilder<'a, R> {
-    config: Option<R>,
-    approval: Option<Approval<ErasedResource>>,
+    resource: Option<R>,
+    approval: Option<Box<dyn Fn(&R) -> bool + 'static>>,
     output: &'a mut PluginOutput,
+    is_default: bool,
 }
 
 impl<'a, R> ResourceBuilder<'a, R> {
@@ -285,14 +244,48 @@ impl<'a, R> ResourceBuilder<'a, R> {
     {
         let type_id = ResourceTypeId::of::<R>();
         let Self {
-            config,
+            resource,
             approval,
             output,
+            is_default,
         } = self;
+        let approval = match approval {
+            Some(f) => Approval::new(move |erased: &ErasedResource| {
+                erased
+                    .0
+                    .visit::<R, _>(|data| f(data))
+                    // If the types didn't match, we should never veto (it's not this type's problem).
+                    .unwrap_or(true)
+            }),
+            None => Approval::always_approve(),
+        };
+        output.resource_staging.insert(
+            type_id,
+            StagedResource::new(resource, is_default, approval).unwrap(),
+        );
         output
     }
 
-    pub fn with_config() {}
+    pub fn with_data(self, resource: R) -> Self where {
+        ResourceBuilder {
+            resource: Some(resource),
+            approval: None,
+            output: self.output,
+            is_default: false,
+        }
+    }
+
+    pub fn with_default(self) -> Self
+    where
+        R: Default,
+    {
+        ResourceBuilder {
+            resource: Some(R::default()),
+            approval: None,
+            output: self.output,
+            is_default: true,
+        }
+    }
 
     pub fn with_approval() {}
 }
@@ -355,7 +348,9 @@ impl<'a, P> DependencyBuilder<'a, P> {
 
 pub(crate) struct PluginDependency {
     pub(crate) type_id: PluginTypeId,
-    /// An optional pairing of a plugin's data (as initialized by the plugin depending on it) and an erased function that builds the plugin output for that dependency.
+    /// An optional pairing of a plugin's data (as initialized by the plugin
+    /// depending on it) and an erased function that builds the plugin output
+    /// for that dependency.
     pub(crate) data: Option<(
         Box<dyn DeclarativePlugin>,
         fn(&dyn DeclarativePlugin) -> Option<PluginOutput>,
