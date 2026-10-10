@@ -167,6 +167,7 @@ pub(crate) struct PluginRegistrationGraph {
     registration_counter: usize,
     nodes: HashMap<PluginTypeId, Vec<PluginNode>>,
     dependency_edges: HashMap<RegistrationId, Vec<PluginTypeId>>,
+    max_plugin_repeats: usize,
 }
 
 impl Debug for PluginRegistrationGraph {
@@ -191,6 +192,7 @@ impl PluginRegistrationGraph {
             registration_counter: 0,
             nodes: HashMap::new(),
             dependency_edges: HashMap::new(),
+            max_plugin_repeats: 100,
         }
     }
 
@@ -307,13 +309,13 @@ impl PluginRegistrationGraph {
                     // have one:
                     //
                     // 1. Previous instance wasn't an entry point, but this
-                    // instance was.
+                    //    instance was.
                     // 2. Both previous instance and current instance were
-                    // entry points, but the current entry point has a higher
-                    // registration id.
+                    //    entry points, but the current entry point has a
+                    //    higher registration id.
                     //
                     // This does mean we have a preference for later entry
-                    // points, over earlier ones. This could cause some
+                    // points over earlier ones. This could cause some
                     // unexpected behavior and maybe it's better to just
                     // highlight to the user what's gone on and prevent that.
                     if candidate_instance.output.is_entry_point
@@ -353,6 +355,8 @@ impl PluginRegistrationGraph {
         })
     }
 
+    /// Collects all nodes that have an approval function for their
+    /// dependencies.
     pub(crate) fn has_approvals_for_plugin(
         &self,
         plugin_id: PluginTypeId,
@@ -393,6 +397,7 @@ impl PluginRegistrationGraph {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum PluginResolutionError {
     NoResourceCandidate(Vec<(ResourceTypeId, &'static str)>),
     NoPluginCandidate(Vec<(PluginTypeId, &'static str)>),
@@ -459,6 +464,8 @@ impl ItemsGraph {
             if source_ids.len() == 1
                 && let Some(source_id) = source_ids.pop_first()
             {
+                // At this moment in time, a single instance of a resource will always be accepted.
+                // This doesn't make much sense, and should be changed.
                 self.accepted_resource_sources
                     .insert(resource_id, source_id);
             } else {
@@ -472,12 +479,9 @@ impl ItemsGraph {
                     let approval = plugin_node
                         .output
                         .resource_staging
-                        .iter()
-                        .find_map(|resource| {
-                            (*resource.0 == resource_id).then_some(&resource.1.approval_from_plugin)
-                        })
+                        .get(&resource_id)
+                        .map(|resource| &resource.approval_from_plugin)
                         .unwrap_or(&approve_all);
-
                     for source_inner in &source_ids {
                         if !to_remove.contains(source_inner)
                             && let Some(staged_resource) =
@@ -495,12 +499,13 @@ impl ItemsGraph {
                             // 1. It's not already marked for removal
                             // 2. The resource type is present.
                             // 3. The approval function for the outer loop passes.
+                            // Omission is acceptance.
                         } else {
+                            // Otherwise, we add it to the removal list.
                             to_remove.insert(*source_inner);
                         }
                     }
                 }
-
                 if source_ids.len() == to_remove.len() || source_ids.is_empty() {
                     // There are no valid resources, accumulate an error.
                     no_candidates.push((resource_id, resource_name));
@@ -533,9 +538,9 @@ impl ItemsGraph {
                 self.accepted_resource_sources
                     .insert(resource_id, *ongoing_candidate);
             }
-            if !no_candidates.is_empty() {
-                return Err(PluginResolutionError::NoResourceCandidate(no_candidates));
-            }
+        }
+        if !no_candidates.is_empty() {
+            return Err(PluginResolutionError::NoResourceCandidate(no_candidates));
         }
         Ok(())
     }
@@ -544,9 +549,17 @@ impl ItemsGraph {
     /// information we've constructed so far.
     pub(crate) fn final_items_order(&mut self) -> Result<OrderedPluginItems, ()> {
         let mut buffer = Vec::new();
+        // For messages, we build out a hashmap of values to reduce noisy duplication before applying each to
+        let mut messages = HashMap::new();
         self.nodes_mut().for_each(|node| {
-            node.output.extract_messages_into_buffer(&mut buffer);
+            node.output.copy_messages_to_hashmap(&mut messages);
         });
+        buffer.extend(
+            messages
+                .into_iter()
+                .map(|(_, message)| DeclrItem::Message(message)),
+        );
+        // The rest are kinda normal.
         self.nodes_mut().for_each(|node| {
             node.output.extract_schedules_into_buffer(&mut buffer);
         });
@@ -577,11 +590,23 @@ pub(crate) enum DeclrItem {
     Resource(StagedResource),
 }
 
+impl Debug for DeclrItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Message(_) => f.debug_tuple("Message").finish(),
+            Self::System(_) => f.debug_tuple("System").finish(),
+            Self::ScheduleLabel(_) => f.debug_tuple("ScheduleLabel").finish(),
+            Self::Observer(_) => f.debug_tuple("Observer").finish(),
+            Self::Resource(_) => f.debug_tuple("Resource").finish(),
+        }
+    }
+}
+
 impl DeclrItem {
     pub fn apply_to_app(self, app: &mut bevy_app::App) {
         match self {
             DeclrItem::Message(message_registration) => {
-                (message_registration.registration_func)(app)
+                (message_registration.registration_func)(app);
             }
             DeclrItem::System(staged_system) => {
                 staged_system.staging.apply_to_world(app.world_mut());
@@ -598,9 +623,16 @@ impl DeclrItem {
 }
 
 /// The final order for things to be registered in.
+#[derive(Debug)]
 pub(crate) struct OrderedPluginItems(pub(crate) Vec<DeclrItem>);
 
 impl OrderedPluginItems {
+    pub(crate) fn apply_to_app(self, app: &mut bevy_app::App) {
+        for item in self.0 {
+            item.apply_to_app(app);
+        }
+    }
+
     pub(crate) fn messages(&self) -> impl Iterator<Item = &MessageRegistration> {
         self.0.iter().filter_map(|item| match item {
             DeclrItem::Message(message) => Some(message),

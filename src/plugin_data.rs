@@ -140,6 +140,17 @@ impl<D> PluginOutput<D> {
         );
     }
 
+    pub(crate) fn copy_messages_to_hashmap(
+        &self,
+        messages: &mut HashMap<TypeId, MessageRegistration>,
+    ) {
+        messages.extend(
+            self.messages
+                .iter()
+                .map(|(type_id, registration)| (*type_id, *registration)),
+        );
+    }
+
     pub(crate) fn extract_observers_into_buffer(&mut self, buffer: &mut Vec<DeclrItem>) {
         buffer.extend(self.observers.drain(..).map(DeclrItem::Observer));
     }
@@ -232,7 +243,7 @@ impl PluginOutput {
 
 pub struct ResourceBuilder<'a, R> {
     resource: Option<R>,
-    approval: Option<Box<dyn Fn(&R) -> bool + 'static>>,
+    approval: Option<Approval<ErasedResource>>,
     output: &'a mut PluginOutput,
     is_default: bool,
 }
@@ -250,13 +261,7 @@ impl<'a, R> ResourceBuilder<'a, R> {
             is_default,
         } = self;
         let approval = match approval {
-            Some(f) => Approval::new(move |erased: &ErasedResource| {
-                erased
-                    .0
-                    .visit::<R, _>(|data| f(data))
-                    // If the types didn't match, we should never veto (it's not this type's problem).
-                    .unwrap_or(true)
-            }),
+            Some(f) => f,
             None => Approval::always_approve(),
         };
         output.resource_staging.insert(
@@ -266,6 +271,7 @@ impl<'a, R> ResourceBuilder<'a, R> {
         output
     }
 
+    #[must_use]
     pub fn with_data(self, resource: R) -> Self where {
         ResourceBuilder {
             resource: Some(resource),
@@ -275,19 +281,29 @@ impl<'a, R> ResourceBuilder<'a, R> {
         }
     }
 
-    pub fn with_default(self) -> Self
+    #[must_use]
+    pub fn with_default(mut self) -> Self
     where
         R: Default,
     {
-        ResourceBuilder {
-            resource: Some(R::default()),
-            approval: None,
-            output: self.output,
-            is_default: true,
-        }
+        self.resource = Some(R::default());
+        self.is_default = true;
+        self
     }
 
-    pub fn with_approval() {}
+    #[must_use]
+    pub fn with_approval<F: Fn(&R) -> bool + 'static>(mut self, f: F) -> Self
+    where
+        R: 'static,
+    {
+        self.approval = Some(Approval::new(move |erased: &ErasedResource| {
+            erased
+                .0
+                .visit::<R, bool>(|resource| f(resource))
+                .unwrap_or(true)
+        }));
+        self
+    }
 }
 
 pub struct DependencyBuilder<'a, P> {
@@ -392,17 +408,16 @@ impl PluginTypeId {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct MessageRegistration {
     // A function that actually registers the message type with the App/World.
-    pub(crate) registration_func: fn(&mut App),
+    pub(crate) registration_func: fn(&mut App) -> &mut App,
 }
 
 impl MessageRegistration {
     pub(crate) fn new<T: Message>() -> Self {
         Self {
-            registration_func: |app| {
-                app.add_message::<T>();
-            },
+            registration_func: App::add_message::<T>,
         }
     }
 }

@@ -9,7 +9,7 @@ pub mod plugin_data;
 use bevy_app::App;
 pub use plugin_data::PluginOutput;
 
-use crate::graph::{PluginList, PluginRegistrationGraph};
+use crate::graph::{ItemGraphError, PluginList};
 
 /// A declarative alternative to [`Plugin`]
 pub trait DeclarativePlugin: Any {
@@ -35,12 +35,11 @@ impl DeclrAppExt for App {
                 Ok(mut graph_2) => {
                     let _ = graph_2.compute_resources();
                     let final_order = graph_2.final_items_order()?;
-                    for item in final_order.0 {
-                        item.apply_to_app(self);
-                    }
+                    final_order.apply_to_app(self);
                 }
-                Err(_) => todo!(),
+                Err((graph_error, _)) => todo!(),
             }
+        } else {
         }
         Ok(())
     }
@@ -50,8 +49,8 @@ impl DeclrAppExt for App {
 mod test {
     use std::assert_matches;
 
-    use bevy_app::{Startup, Update};
-    use bevy_ecs::resource::Resource;
+    use bevy_app::{App, Startup, Update};
+    use bevy_ecs::{resource::Resource, world::World};
 
     use crate::{DeclarativePlugin, EntryPoints, graph::PluginList};
 
@@ -229,19 +228,120 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let mut graph = expanded.try_build();
+        let graph = expanded.try_build();
         assert_matches!(graph, Err(_))
     }
+
+    #[derive(Debug, Resource, Default)]
+    struct TestResourceA(usize);
 
     struct ResourceCheckK;
 
     impl DeclarativePlugin for ResourceCheckK {
         fn build(&self, output: &mut crate::PluginOutput) {
-            output;
+            output
+                .resource_builder()
+                .with_data(TestResourceA(67))
+                .build();
         }
     }
 
     struct ResourceCheckL;
+
+    impl DeclarativePlugin for ResourceCheckL {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output
+                .resource_builder()
+                .with_data(TestResourceA(20))
+                .with_approval(|data| data.0 % 2 == 1)
+                .build();
+        }
+    }
+
+    #[test]
+    fn resource_selection() {
+        let list = (ResourceCheckK, ResourceCheckL).get_output();
+        let expanded = list.expand();
+        assert_matches!(expanded, Ok(_));
+        let mut graph = expanded.unwrap().try_build().unwrap();
+        let resource_compute_result = graph.compute_resources();
+        assert_matches!(resource_compute_result, Ok(_));
+        let order = graph.final_items_order();
+        assert_matches!(order, Ok(_));
+        let order = order.unwrap();
+        assert_eq!(order.resources().count(), 1);
+        let mut app = App::new();
+        order.apply_to_app(&mut app);
+        let resource = app
+            .world_mut()
+            .get_resource_or_insert_with(|| TestResourceA(0));
+        assert_eq!(resource.0, 67)
+    }
+
+    struct ResourceCheckM;
+
+    impl DeclarativePlugin for ResourceCheckM {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output
+                .dependency_builder()
+                .with_config(ResourceCheckK)
+                .build();
+        }
+    }
+
+    #[test]
+    fn resource_dependency() {
+        let list = ResourceCheckM.get_output();
+        let expanded = list.expand();
+        assert_matches!(expanded, Ok(_));
+        let mut graph = expanded.unwrap().try_build().unwrap();
+        let resource_compute_result = graph.compute_resources();
+        assert_matches!(resource_compute_result, Ok(_));
+        let order = graph.final_items_order();
+        assert_matches!(order, Ok(_));
+        let order = order.unwrap();
+        assert_eq!(order.resources().count(), 1);
+        let mut app = App::new();
+        order.apply_to_app(&mut app);
+        let resource = app
+            .world_mut()
+            .get_resource_or_insert_with(|| TestResourceA(0));
+        assert_eq!(resource.0, 67)
+    }
+
+    struct ResourceFailureCheckN;
+
+    impl DeclarativePlugin for ResourceFailureCheckN {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output
+                .resource_builder()
+                .with_data(TestResourceA(100))
+                .with_approval(|_| false)
+                .build();
+        }
+    }
+
+    struct ResourceFailureCheckO;
+
+    impl DeclarativePlugin for ResourceFailureCheckO {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output
+                .resource_builder()
+                .with_data(TestResourceA(100))
+                .with_approval(|_| false)
+                .build();
+        }
+    }
+
+    #[test]
+    fn resource_trivial_failure() {
+        let list = (ResourceFailureCheckN, ResourceFailureCheckO).get_output();
+        let expanded = list.expand();
+        assert_matches!(expanded, Ok(_));
+        let mut graph = expanded.unwrap().try_build().unwrap();
+        let resource_compute_result = graph.compute_resources();
+        assert_matches!(resource_compute_result, Err(_));
+    }
 }
 
 pub trait EntryPoints {
