@@ -9,7 +9,10 @@ pub mod plugin_data;
 use bevy_app::App;
 pub use plugin_data::PluginOutput;
 
-use crate::graph::{ItemGraphError, PluginList};
+use crate::{
+    DeclarativePluginError::CouldNotExpand,
+    graph::{ItemGraphError, PluginList},
+};
 
 /// A declarative alternative to [`Plugin`]
 pub trait DeclarativePlugin: Any {
@@ -24,22 +27,44 @@ pub trait DeclarativePlugin: Any {
 }
 
 pub trait DeclrAppExt {
-    fn apply_declarative(&mut self, entry_point_list: PluginList) -> Result<(), ()>;
+    fn apply_declarative(
+        &mut self,
+        entry_point_list: PluginList,
+    ) -> Result<(), DeclarativePluginError>;
+}
+
+#[derive(Debug)]
+pub enum DeclarativePluginError {
+    ItemGraphError(ItemGraphError),
+    CouldNotExpand,
+    CouldNotFinalizeOrder,
 }
 
 impl DeclrAppExt for App {
-    fn apply_declarative(&mut self, entry_point_list: PluginList) -> Result<(), ()> {
-        let graph = entry_point_list.expand()?;
+    fn apply_declarative(
+        &mut self,
+        entry_point_list: PluginList,
+    ) -> Result<(), DeclarativePluginError> {
+        let graph = entry_point_list
+            .expand()
+            .map_err(|_err| DeclarativePluginError::CouldNotExpand)?;
         if graph.can_build() {
             match graph.try_build() {
                 Ok(mut graph_2) => {
                     let _ = graph_2.compute_resources();
-                    let final_order = graph_2.final_items_order()?;
+                    let final_order = graph_2
+                        .final_items_order()
+                        .map_err(|_err| DeclarativePluginError::CouldNotFinalizeOrder)?;
                     final_order.apply_to_app(self);
                 }
-                Err((graph_error, _)) => todo!(),
+                Err((graph_error, _)) => {
+                    return Err(DeclarativePluginError::ItemGraphError(graph_error));
+                }
             }
         } else {
+            return Err(DeclarativePluginError::ItemGraphError(
+                ItemGraphError::FailedBuildCheck,
+            ));
         }
         Ok(())
     }

@@ -18,6 +18,10 @@ use crate::{
     plugin_data::{MessageRegistration, PluginDependency, PluginTypeId},
 };
 
+pub enum PluginListExpansionError {
+    TooManyPluginInstances(()),
+}
+
 /// A list of "entry point" plugins and their outputs. This gets expanded into a graph.
 pub struct PluginList {
     pub(crate) nodes: Vec<(Box<dyn DeclarativePlugin>, PluginOutput)>,
@@ -114,9 +118,9 @@ impl PluginList {
                                 type_id: dependency.type_id,
                             },
                         ));
-                        continue;
+                    } else {
+                        dependency_queue.push_back((reg_id, dependency));
                     }
-                    dependency_queue.push_back((reg_id, dependency));
                 }
                 if can_zst_optimize {
                     zst_already_expanded.insert(plugin_id, reg_id);
@@ -242,22 +246,13 @@ impl PluginRegistrationGraph {
         let candidate_ids = self.naive_candidates()?;
         let mut extracted = Vec::with_capacity(candidate_ids.len());
         let mut edges = HashMap::new();
-        let mut tripped = false;
         for candidate in candidate_ids {
             let entry = self.nodes.entry(candidate.plugin_id()).or_default();
-            let Some(ix) = entry
+            let ix = entry
                 .iter()
                 .enumerate()
                 .find_map(|(ix, node)| (node.registration_id == candidate).then_some(ix))
-            else {
-                tripped = true;
-                break;
-            };
-            if tripped {
-                panic!(
-                    "candidate finding function found complete list, but entries seem to already be missing."
-                )
-            }
+                .expect("Candidate finding function found complete list, but entries are missing.");
             extracted.push(entry.remove(ix));
             if let Some(dependencies) = self.dependency_edges.get(&candidate) {
                 edges.insert(candidate.plugin_id(), dependencies.clone());
@@ -549,7 +544,8 @@ impl ItemsGraph {
     /// information we've constructed so far.
     pub(crate) fn final_items_order(&mut self) -> Result<OrderedPluginItems, ()> {
         let mut buffer = Vec::new();
-        // For messages, we build out a hashmap of values to reduce noisy duplication before applying each to
+        // For messages, we build out a hashmap of values to reduce noisy
+        // duplication of message registration if messages are
         let mut messages = HashMap::new();
         self.nodes_mut().for_each(|node| {
             node.output.copy_messages_to_hashmap(&mut messages);
