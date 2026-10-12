@@ -62,6 +62,7 @@ impl StagedResource {
         self.staged.erased.as_ref()
     }
 
+    #[allow(unused)]
     pub(crate) fn erased_type_id(&self) -> ResourceTypeId {
         self.type_id
     }

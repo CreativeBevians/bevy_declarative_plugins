@@ -132,14 +132,6 @@ impl<D> PluginOutput<D> {
         }
     }
 
-    pub(crate) fn extract_messages_into_buffer(&mut self, buffer: &mut Vec<DeclrItem>) {
-        buffer.extend(
-            self.messages
-                .drain()
-                .map(|(_, message_type)| DeclrItem::Message(message_type)),
-        );
-    }
-
     pub(crate) fn copy_messages_to_hashmap(
         &self,
         messages: &mut HashMap<TypeId, MessageRegistration>,

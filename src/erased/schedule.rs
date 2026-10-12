@@ -1,9 +1,5 @@
-use core::{any::TypeId, hash::Hasher};
-use std::hash::DefaultHasher;
-
 use bevy_app::MainScheduleOrder;
 use bevy_ecs::{
-    label::DynHash,
     schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, Schedules},
     system::ScheduleSystem,
     world::World,

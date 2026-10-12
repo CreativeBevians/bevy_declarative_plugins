@@ -9,10 +9,7 @@ pub mod plugin_data;
 use bevy_app::App;
 pub use plugin_data::PluginOutput;
 
-use crate::{
-    DeclarativePluginError::CouldNotExpand,
-    graph::{ItemGraphError, PluginList},
-};
+use crate::graph::{ItemGraphError, PluginList};
 
 /// A declarative alternative to [`Plugin`]
 pub trait DeclarativePlugin: Any {
@@ -75,9 +72,9 @@ mod test {
     use std::assert_matches;
 
     use bevy_app::{App, Startup, Update};
-    use bevy_ecs::{resource::Resource, world::World};
+    use bevy_ecs::resource::Resource;
 
-    use crate::{DeclarativePlugin, EntryPoints, graph::PluginList};
+    use crate::{DeclarativePlugin, EntryPoints};
 
     struct ShallowPluginA;
 

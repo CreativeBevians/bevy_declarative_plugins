@@ -73,6 +73,7 @@ impl MetadataPtr {
         data_read
     }
 
+    #[allow(unused)]
     pub fn erased_type_id(&self) -> TypeId {
         self.type_id
     }
