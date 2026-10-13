@@ -74,7 +74,7 @@ mod test {
     use bevy_app::{App, Startup, Update};
     use bevy_ecs::resource::Resource;
 
-    use crate::{DeclarativePlugin, EntryPoints};
+    use crate::{DeclarativePlugin, EntryPoints, graph::PluginListExpansionError};
 
     struct ShallowPluginA;
 
@@ -363,6 +363,46 @@ mod test {
         let mut graph = expanded.unwrap().try_build().unwrap();
         let resource_compute_result = graph.compute_resources();
         assert_matches!(resource_compute_result, Err(_));
+    }
+
+    pub struct InfiniteA {
+        num: usize,
+    }
+
+    impl DeclarativePlugin for InfiniteA {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            let num = self.num;
+            output
+                .dependency_builder()
+                .with_config(InfiniteB { num: self.num + 1 })
+                .with_approval(move |inf_b| inf_b.num > num)
+                .build();
+        }
+    }
+
+    pub struct InfiniteB {
+        num: usize,
+    }
+
+    impl DeclarativePlugin for InfiniteB {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            let num = self.num;
+            output
+                .dependency_builder()
+                .with_config(InfiniteA { num: self.num + 1 })
+                .with_approval(move |inf_a| inf_a.num > num)
+                .build();
+        }
+    }
+
+    #[test]
+    fn infinite_dependency_fails() {
+        let list = InfiniteA { num: 0 }.get_output();
+        let expanded = list.expand();
+        assert_matches!(
+            expanded,
+            Err(PluginListExpansionError::TooManyPluginInstances(_))
+        );
     }
 }
 

@@ -18,8 +18,9 @@ use crate::{
     plugin_data::{MessageRegistration, PluginDependency, PluginTypeId},
 };
 
+#[derive(Debug)]
 pub enum PluginListExpansionError {
-    TooManyPluginInstances(()),
+    TooManyPluginInstances(PluginTypeId),
 }
 
 /// A list of "entry point" plugins and their outputs. This gets expanded into a graph.
@@ -42,7 +43,7 @@ impl PluginList {
 
     /// Expand the list of entry point plugins into a full graph. Ignores
     /// recurring ZSTs.
-    pub(crate) fn expand(mut self) -> Result<PluginRegistrationGraph, ()> {
+    pub(crate) fn expand(mut self) -> Result<PluginRegistrationGraph, PluginListExpansionError> {
         let mut zst_already_expanded: HashMap<PluginTypeId, RegistrationId> = HashMap::new();
         let mut graph = PluginRegistrationGraph::new();
         for (_, output) in &mut self.nodes {
@@ -71,6 +72,10 @@ impl PluginList {
         // TODO: detect cycles in expansion + stop adding when "expanded enough" + solved.
         // mean moving this logic to the PluginRegistrationGraph building side.
         while let Some((from, dependency)) = dependency_queue.pop_front() {
+            let plugin_id = dependency.type_id;
+            if graph.count_instances(plugin_id) > graph.max_plugin_repeats {
+                return Err(PluginListExpansionError::TooManyPluginInstances(plugin_id));
+            }
             if !zst_already_expanded.contains_key(&dependency.type_id)
                 && let Some((dyn_plugin, output_fn)) = dependency.data
             {
@@ -198,6 +203,13 @@ impl PluginRegistrationGraph {
             dependency_edges: HashMap::new(),
             max_plugin_repeats: 100,
         }
+    }
+
+    pub(crate) fn count_instances(&self, plugin_id: PluginTypeId) -> usize {
+        self.nodes
+            .get(&plugin_id)
+            .map(|instances| instances.len())
+            .unwrap_or(0)
     }
 
     #[must_use]
