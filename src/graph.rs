@@ -232,7 +232,7 @@ impl PluginRegistrationGraph {
         (registration_id, dependencies)
     }
 
-    pub(crate) fn try_build(self) -> Result<ItemsGraph, (ItemGraphError, Self)> {
+    pub(crate) fn build(self) -> Result<ItemsGraph, (ItemGraphError, Self)> {
         ItemsGraph::new(self)
     }
 
@@ -405,7 +405,7 @@ impl PluginRegistrationGraph {
 }
 
 #[derive(Debug)]
-pub(crate) enum PluginResolutionError {
+pub enum PluginResolutionError {
     NoResourceCandidate(Vec<(ResourceTypeId, &'static str)>),
     NoPluginCandidate(Vec<(PluginTypeId, &'static str)>),
 }
@@ -447,6 +447,11 @@ impl ItemsGraph {
 
     pub(crate) fn nodes_mut(&mut self) -> impl Iterator<Item = &mut PluginNode> {
         self.sources.values_mut()
+    }
+
+    pub(crate) fn build(&mut self) -> Result<OrderedPluginItems, PluginResolutionError> {
+        self.compute_resources()?;
+        Ok(self.final_items_order())
     }
 
     /// Establish candidates for which resources to use.
@@ -554,7 +559,7 @@ impl ItemsGraph {
 
     /// Build out the final registration graph from the registration
     /// information we've constructed so far.
-    pub(crate) fn final_items_order(&mut self) -> Result<OrderedPluginItems, ()> {
+    pub(crate) fn final_items_order(&mut self) -> OrderedPluginItems {
         let mut buffer = Vec::new();
         // For messages, we build out a hashmap of values to reduce noisy
         // duplication of message registration if messages are
@@ -584,7 +589,7 @@ impl ItemsGraph {
         });
         // Swap back in case we use this in debugging / analysis.
         std::mem::swap(&mut map, &mut self.accepted_resource_sources);
-        Ok(OrderedPluginItems(buffer))
+        OrderedPluginItems(buffer)
     }
 }
 

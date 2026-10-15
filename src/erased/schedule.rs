@@ -10,19 +10,20 @@ use crate::metadata_ptr::MetadataPtr;
 pub(crate) struct ErasedScheduleLabel(MetadataPtr);
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum BeforeOrAfter<S> {
+pub enum BeforeOrAfter<S> {
     Before(S),
     After(S),
 }
 
 impl<S> BeforeOrAfter<S> {
-    fn map<T>(self, f: impl FnOnce(S) -> T) -> BeforeOrAfter<T> {
+    pub fn map<T>(self, f: impl FnOnce(S) -> T) -> BeforeOrAfter<T> {
         match self {
             BeforeOrAfter::Before(label) => BeforeOrAfter::Before(f(label)),
             BeforeOrAfter::After(label) => BeforeOrAfter::After(f(label)),
         }
     }
-    fn get(&self) -> &S {
+
+    pub fn get(&self) -> &S {
         match self {
             BeforeOrAfter::Before(s) | BeforeOrAfter::After(s) => s,
         }

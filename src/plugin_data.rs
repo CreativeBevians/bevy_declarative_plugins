@@ -18,9 +18,8 @@ use crate::{
     App, DeclarativePlugin,
     approval::Approval,
     erased::{
-        dataless::ErasedDataless,
         resource::{ErasedResource, ResourceTypeId, StagedResource},
-        schedule::{StagedScheduleLabel, StagedSystem},
+        schedule::{BeforeOrAfter, StagedScheduleLabel, StagedSystem},
     },
     graph::DeclrItem,
 };
@@ -57,8 +56,6 @@ pub struct PluginOutput<D = PluginDependencies> {
     /// Resource storage
     pub(crate) resource_staging: HashMap<ResourceTypeId, StagedResource>,
     pub(crate) plugin_approval: HashMap<PluginTypeId, Approval<Box<dyn DeclarativePlugin>>>,
-    #[cfg(feature = "state")]
-    pub(crate) states: Vec<ErasedDataless<()>>,
     /// Plugin dependencies, represented with a generic so we can erase them in
     /// plugin graph resolution.
     pub(crate) dependencies: D,
@@ -74,7 +71,6 @@ impl<D> PluginOutput<D> {
             schedules,
             messages,
             resource_staging,
-            states,
             dependencies,
             plugin_approval,
             schedule_labels,
@@ -90,7 +86,6 @@ impl<D> PluginOutput<D> {
                 messages,
                 resource_staging,
                 plugin_approval,
-                states,
                 dependencies: (),
                 schedule_labels,
                 plugin_name,
@@ -173,20 +168,16 @@ impl PluginOutput {
             resource_staging: HashMap::new(),
             dependencies: PluginDependencies(Vec::new()),
             plugin_approval: HashMap::new(),
-            states: Vec::new(),
             schedule_labels: Vec::new(),
         }
     }
 
     #[cfg(feature = "state")]
     pub fn init_state<T: States + Default>(&mut self) {
-        self.states.push(ErasedDataless {
-            ordering: (),
-            func: |world| {
-                use bevy_state::state::State;
-                world.get_resource_or_init::<State<T>>();
-            },
-        });
+        use bevy_state::state::State;
+        self.resource_builder::<State<T>>()
+            .with_data(State::new(T::default()))
+            .build();
     }
 
     pub fn add_systems<M: 'static>(
@@ -230,6 +221,33 @@ impl PluginOutput {
             approval: None,
             output: self,
         }
+    }
+
+    pub fn add_schedule<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+        &mut self,
+        label: S,
+        relative_to: BeforeOrAfter<O>,
+    ) {
+        self.schedule_labels
+            .push(StagedScheduleLabel::new(label, relative_to).unwrap());
+    }
+
+    pub fn add_schedule_before<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+        &mut self,
+        label: S,
+        before: O,
+    ) {
+        self.schedule_labels
+            .push(StagedScheduleLabel::new(label, BeforeOrAfter::Before(before)).unwrap());
+    }
+
+    pub fn add_schedule_after<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+        &mut self,
+        label: S,
+        after: O,
+    ) {
+        self.schedule_labels
+            .push(StagedScheduleLabel::new(label, BeforeOrAfter::After(after)).unwrap());
     }
 }
 
@@ -392,7 +410,7 @@ impl PluginDependency {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
-pub(crate) struct PluginTypeId(TypeId);
+pub struct PluginTypeId(TypeId);
 
 impl PluginTypeId {
     pub(crate) fn of<P: DeclarativePlugin>() -> Self {

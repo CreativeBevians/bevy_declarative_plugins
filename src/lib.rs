@@ -6,10 +6,13 @@ pub(crate) mod graph;
 pub(crate) mod metadata_ptr;
 /// Declarative Plugin public API.
 pub mod plugin_data;
-use bevy_app::App;
-pub use plugin_data::PluginOutput;
-
+pub use crate::graph::PluginListExpansionError;
+use crate::graph::PluginResolutionError;
 use crate::graph::{ItemGraphError, PluginList};
+use bevy_app::App;
+pub use erased::schedule::BeforeOrAfter;
+pub use plugin_data::PluginOutput;
+pub use plugin_data::PluginTypeId;
 
 /// A declarative alternative to [`Plugin`]
 pub trait DeclarativePlugin: Any {
@@ -32,9 +35,9 @@ pub trait DeclrAppExt {
 
 #[derive(Debug)]
 pub enum DeclarativePluginError {
+    ExpansionError(PluginListExpansionError),
+    ResolutionError(PluginResolutionError),
     ItemGraphError(ItemGraphError),
-    CouldNotExpand,
-    CouldNotFinalizeOrder,
 }
 
 impl DeclrAppExt for App {
@@ -44,25 +47,10 @@ impl DeclrAppExt for App {
     ) -> Result<(), DeclarativePluginError> {
         let graph = entry_point_list
             .expand()
-            .map_err(|_err| DeclarativePluginError::CouldNotExpand)?;
-        if graph.can_build() {
-            match graph.try_build() {
-                Ok(mut graph_2) => {
-                    let _ = graph_2.compute_resources();
-                    let final_order = graph_2
-                        .final_items_order()
-                        .map_err(|_err| DeclarativePluginError::CouldNotFinalizeOrder)?;
-                    final_order.apply_to_app(self);
-                }
-                Err((graph_error, _)) => {
-                    return Err(DeclarativePluginError::ItemGraphError(graph_error));
-                }
-            }
-        } else {
-            return Err(DeclarativePluginError::ItemGraphError(
-                ItemGraphError::FailedBuildCheck,
-            ));
-        }
+            .map_err(DeclarativePluginError::ExpansionError)?;
+        let mut graph = graph.build().map_err(|(err, _)|DeclarativePluginError::ItemGraphError(err))?;
+        let final_order = graph.build().map_err(DeclarativePluginError::ResolutionError)?;
+        final_order.apply_to_app(self);
         Ok(())
     }
 }
@@ -98,8 +86,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let mut graph = expanded.try_build().unwrap();
-        let order = graph.final_items_order().unwrap();
+        let order = expanded.build().unwrap().build().unwrap();
         assert_eq!(order.systems().count(), 2);
     }
 
@@ -135,8 +122,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let mut graph = expanded.try_build().unwrap();
-        let order = graph.final_items_order().unwrap();
+        let order = expanded.build().unwrap().build().unwrap();
         assert_eq!(order.systems().count(), 4);
     }
 
@@ -152,9 +138,7 @@ mod test {
     }
 
     #[derive(Debug)]
-    struct NonZstPluginF {
-        s: String,
-    }
+    struct NonZstPluginF;
 
     impl DeclarativePlugin for NonZstPluginF {
         fn build(&self, output: &mut crate::PluginOutput) {
@@ -167,15 +151,11 @@ mod test {
 
     #[test]
     fn non_zst_plugins() {
-        let list = NonZstPluginF {
-            s: "Lmao".to_string(),
-        }
-        .get_output();
+        let list = NonZstPluginF.get_output();
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let mut graph = expanded.try_build().unwrap();
-        let order = graph.final_items_order().unwrap();
+        let order = expanded.build().unwrap().build().unwrap();
         assert_eq!(order.systems().count(), 1);
     }
 
@@ -227,8 +207,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let mut graph = expanded.try_build().unwrap();
-        let order = graph.final_items_order().unwrap();
+        let order = expanded.build().unwrap().build().unwrap();
         assert_eq!(order.systems().count(), 1);
     }
 
@@ -250,7 +229,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let graph = expanded.try_build();
+        let graph = expanded.build();
         assert_matches!(graph, Err(_))
     }
 
@@ -285,12 +264,10 @@ mod test {
         let list = (ResourceCheckK, ResourceCheckL).get_output();
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
-        let mut graph = expanded.unwrap().try_build().unwrap();
+        let mut graph = expanded.unwrap().build().unwrap();
         let resource_compute_result = graph.compute_resources();
         assert_matches!(resource_compute_result, Ok(_));
         let order = graph.final_items_order();
-        assert_matches!(order, Ok(_));
-        let order = order.unwrap();
         assert_eq!(order.resources().count(), 1);
         let mut app = App::new();
         order.apply_to_app(&mut app);
@@ -316,12 +293,10 @@ mod test {
         let list = ResourceCheckM.get_output();
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
-        let mut graph = expanded.unwrap().try_build().unwrap();
+        let mut graph = expanded.unwrap().build().unwrap();
         let resource_compute_result = graph.compute_resources();
         assert_matches!(resource_compute_result, Ok(_));
         let order = graph.final_items_order();
-        assert_matches!(order, Ok(_));
-        let order = order.unwrap();
         assert_eq!(order.resources().count(), 1);
         let mut app = App::new();
         order.apply_to_app(&mut app);
@@ -360,7 +335,7 @@ mod test {
         let list = (ResourceFailureCheckN, ResourceFailureCheckO).get_output();
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
-        let mut graph = expanded.unwrap().try_build().unwrap();
+        let mut graph = expanded.unwrap().build().unwrap();
         let resource_compute_result = graph.compute_resources();
         assert_matches!(resource_compute_result, Err(_));
     }
