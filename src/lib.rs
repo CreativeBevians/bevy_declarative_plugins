@@ -10,9 +10,11 @@ pub use crate::graph::PluginListExpansionError;
 use crate::graph::PluginResolutionError;
 use crate::graph::{ItemGraphError, PluginList};
 use bevy_app::App;
+pub use erased::resource::ResourceTypeId;
 pub use erased::schedule::BeforeOrAfter;
 pub use plugin_data::PluginOutput;
 pub use plugin_data::PluginTypeId;
+pub mod entry_points;
 
 /// A declarative alternative to [`Plugin`]
 pub trait DeclarativePlugin: Any {
@@ -48,8 +50,12 @@ impl DeclrAppExt for App {
         let graph = entry_point_list
             .expand()
             .map_err(DeclarativePluginError::ExpansionError)?;
-        let mut graph = graph.build().map_err(|(err, _)|DeclarativePluginError::ItemGraphError(err))?;
-        let final_order = graph.build().map_err(DeclarativePluginError::ResolutionError)?;
+        let mut graph = graph
+            .build()
+            .map_err(|(err, _)| DeclarativePluginError::ItemGraphError(err))?;
+        let final_order = graph
+            .build()
+            .map_err(DeclarativePluginError::ResolutionError)?;
         final_order.apply_to_app(self);
         Ok(())
     }
@@ -62,7 +68,7 @@ mod test {
     use bevy_app::{App, Startup, Update};
     use bevy_ecs::resource::Resource;
 
-    use crate::{DeclarativePlugin, EntryPoints, graph::PluginListExpansionError};
+    use crate::{DeclarativePlugin, entry_points::EntryPoints, graph::PluginListExpansionError};
 
     struct ShallowPluginA;
 
@@ -378,66 +384,5 @@ mod test {
             expanded,
             Err(PluginListExpansionError::TooManyPluginInstances(_))
         );
-    }
-}
-
-pub trait EntryPoints {
-    fn get_output(self) -> PluginList;
-}
-
-impl<A: DeclarativePlugin> EntryPoints for A {
-    fn get_output(self) -> PluginList {
-        let mut output = PluginOutput::new::<A>();
-        self.build(&mut output);
-        PluginList {
-            nodes: vec![(Box::new(self), output)],
-        }
-    }
-}
-
-impl<A: EntryPoints, B: EntryPoints> EntryPoints for (A, B) {
-    fn get_output(self) -> PluginList {
-        let (a, b) = self;
-        let mut list = PluginList { nodes: Vec::new() };
-        list.extend(a.get_output()).extend(b.get_output());
-        list
-    }
-}
-
-impl<A: EntryPoints, B: EntryPoints, C: EntryPoints> EntryPoints for (A, B, C) {
-    fn get_output(self) -> PluginList {
-        let (a, b, c) = self;
-        let mut list = PluginList { nodes: Vec::new() };
-        list.extend(a.get_output())
-            .extend(b.get_output())
-            .extend(c.get_output());
-        list
-    }
-}
-
-impl<A: EntryPoints, B: EntryPoints, C: EntryPoints, D: EntryPoints> EntryPoints for (A, B, C, D) {
-    fn get_output(self) -> PluginList {
-        let (a, b, c, d) = self;
-        let mut list = PluginList { nodes: Vec::new() };
-        list.extend(a.get_output())
-            .extend(b.get_output())
-            .extend(c.get_output())
-            .extend(d.get_output());
-        list
-    }
-}
-
-impl<A: EntryPoints, B: EntryPoints, C: EntryPoints, D: EntryPoints, E: EntryPoints> EntryPoints
-    for (A, B, C, D, E)
-{
-    fn get_output(self) -> PluginList {
-        let (a, b, c, d, e) = self;
-        let mut list = PluginList { nodes: Vec::new() };
-        list.extend(a.get_output())
-            .extend(b.get_output())
-            .extend(c.get_output())
-            .extend(d.get_output())
-            .extend(e.get_output());
-        list
     }
 }

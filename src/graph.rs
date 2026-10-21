@@ -1,5 +1,5 @@
 use bevy_ecs::observer::Observer;
-use bevy_platform::collections::{HashMap, HashSet};
+use bevy_platform::collections::HashMap;
 use core::{convert::identity, hash::Hash};
 use std::{
     boxed::Box,
@@ -11,6 +11,7 @@ use std::{
 use crate::{
     DeclarativePlugin, PluginOutput,
     approval::Approval,
+    entry_points::EntryPoints,
     erased::{
         resource::{ResourceTypeId, StagedResource},
         schedule::{StagedScheduleLabel, StagedSystem},
@@ -29,15 +30,8 @@ pub struct PluginList {
 }
 
 impl PluginList {
-    pub(crate) fn extend(&mut self, other: Self) -> &mut Self {
-        self.nodes.extend(other.nodes);
-        self
-    }
-
-    pub(crate) fn extend_with<P: DeclarativePlugin>(&mut self, plugin: P) -> &mut Self {
-        let mut output = PluginOutput::new::<P>();
-        plugin.build(&mut output);
-        self.nodes.push((Box::new(plugin), output));
+    pub(crate) fn extend_with<P: EntryPoints>(&mut self, entry_point: P) -> &mut Self {
+        entry_point.add_to_list(self);
         self
     }
 
@@ -345,23 +339,6 @@ impl PluginRegistrationGraph {
             .find(|node| node.registration_id == registration_id)
     }
 
-    pub(crate) fn evaluate_plugin(
-        &self,
-        plugin_id: PluginTypeId,
-        data: &Box<dyn DeclarativePlugin>,
-    ) -> impl Iterator<Item = (RegistrationId, bool)> {
-        self.has_approvals_for_plugin(plugin_id).map(move |plugin| {
-            let id = plugin.registration_id;
-            let result = plugin
-                .output
-                .plugin_approval
-                .get(&plugin_id)
-                .map(move |approval| approval.approves(data))
-                .unwrap_or(true);
-            (id, result)
-        })
-    }
-
     /// Collects all nodes that have an approval function for their
     /// dependencies.
     pub(crate) fn has_approvals_for_plugin(
@@ -383,13 +360,6 @@ impl PluginRegistrationGraph {
 
     pub(crate) fn plugin_ids(&self) -> impl Iterator<Item = PluginTypeId> {
         self.nodes.iter().map(|(k, _)| *k)
-    }
-
-    pub(crate) fn entry_points(&self) -> impl Iterator<Item = &PluginNode> {
-        self.nodes
-            .iter()
-            .flat_map(|(_, node)| node.iter())
-            .filter(|node| node.distance_from_entry == Some(0))
     }
 
     pub(crate) fn instances(&self, plugin_id: PluginTypeId) -> impl Iterator<Item = &PluginNode> {
@@ -419,7 +389,6 @@ pub enum ItemGraphError {
 #[derive(Debug)]
 pub(crate) struct ItemsGraph {
     sources: HashMap<PluginTypeId, PluginNode>,
-    edges: HashMap<PluginTypeId, HashSet<PluginTypeId>>,
     accepted_resource_sources: HashMap<ResourceTypeId, PluginTypeId>,
 }
 
@@ -428,15 +397,11 @@ impl ItemsGraph {
         mut graph: PluginRegistrationGraph,
     ) -> Result<Self, (ItemGraphError, PluginRegistrationGraph)> {
         if graph.can_build() {
-            let (nodes, edges) = graph.extract_candidates().unwrap();
+            let (nodes, _) = graph.extract_candidates().unwrap();
             Ok(Self {
                 sources: nodes
                     .into_iter()
                     .map(|node| (node.registration_id.plugin_id(), node))
-                    .collect(),
-                edges: edges
-                    .into_iter()
-                    .map(|(source, destinations)| (source, destinations.into_iter().collect()))
                     .collect(),
                 accepted_resource_sources: HashMap::new(),
             })
@@ -646,6 +611,7 @@ impl OrderedPluginItems {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn messages(&self) -> impl Iterator<Item = &MessageRegistration> {
         self.0.iter().filter_map(|item| match item {
             DeclrItem::Message(message) => Some(message),
@@ -653,6 +619,7 @@ impl OrderedPluginItems {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn systems(&self) -> impl Iterator<Item = &StagedSystem> {
         self.0.iter().filter_map(|item| match item {
             DeclrItem::System(system) => Some(system),
@@ -660,6 +627,7 @@ impl OrderedPluginItems {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn labels(&self) -> impl Iterator<Item = &StagedScheduleLabel> {
         self.0.iter().filter_map(|item| match item {
             DeclrItem::ScheduleLabel(label) => Some(label),
@@ -667,6 +635,7 @@ impl OrderedPluginItems {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn observers(&self) -> impl Iterator<Item = &Observer> {
         self.0.iter().filter_map(|item| match item {
             DeclrItem::Observer(observer) => Some(observer),
@@ -674,6 +643,7 @@ impl OrderedPluginItems {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn resources(&self) -> impl Iterator<Item = &StagedResource> {
         self.0.iter().filter_map(|item| match item {
             DeclrItem::Resource(resource) => Some(resource),
