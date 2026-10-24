@@ -9,7 +9,8 @@ pub mod plugin_data;
 pub use crate::graph::PluginListExpansionError;
 use crate::graph::PluginResolutionError;
 use crate::graph::{ItemGraphError, PluginList};
-use bevy_app::App;
+#[allow(unused_imports)]
+use bevy_app::{App, Plugin};
 pub use erased::resource::ResourceTypeId;
 pub use erased::schedule::BeforeOrAfter;
 pub use plugin_data::PluginOutput;
@@ -18,15 +19,26 @@ pub mod entry_points;
 
 pub struct EditorTooling;
 
-/// A declarative alternative to [`Plugin`]
+/// A declarative alternative to [`Plugin`].
 pub trait DeclarativePlugin: Any {
-    /// Plugin registration function.
+    /// Plugin registration function. Intentionally close to [`Plugin::build`].
     fn build(&self, output: &mut PluginOutput);
 
+    /// Registration method for information relevant to the render world.
+    ///
+    /// This version of [`PluginOutput`] does not have any dependencies, but can
+    /// otherwise still do everything else that a plugin output can.
+    ///
+    /// If you need dependencies, register them in the
+    /// [`DeclarativePlugin::build`] method for your plugin.
+    ///
     /// TODO: Have this be used at all.
     #[allow(unused_variables)]
     fn build_render(&self, output: &mut PluginOutput<()>) {}
 
+    /// Registration method for editor tools. This is here largely for
+    /// conceptual reasons, [`EditorTooling`] does not do anything currently.
+    ///
     /// TODO: Have this be used at all.
     #[allow(unused_variables)]
     fn build_editor(&self, output: &mut EditorTooling) {}
