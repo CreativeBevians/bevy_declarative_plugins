@@ -16,10 +16,20 @@ pub use plugin_data::PluginOutput;
 pub use plugin_data::PluginTypeId;
 pub mod entry_points;
 
+pub struct EditorTooling;
+
 /// A declarative alternative to [`Plugin`]
 pub trait DeclarativePlugin: Any {
     /// Plugin registration function.
     fn build(&self, output: &mut PluginOutput);
+
+    /// TODO: Have this be used at all.
+    #[allow(unused_variables)]
+    fn build_render(&self, output: &mut PluginOutput<()>) {}
+
+    /// TODO: Have this be used at all.
+    #[allow(unused_variables)]
+    fn build_editor(&self, output: &mut EditorTooling) {}
 
     /// When this is a zero-sized type, it will give the same [`PluginOutput`]
     /// every time [`DeclarativePlugin::build`] is called.
