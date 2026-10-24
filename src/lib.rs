@@ -66,9 +66,14 @@ mod test {
     use std::assert_matches;
 
     use bevy_app::{App, Startup, Update};
-    use bevy_ecs::resource::Resource;
+    use bevy_ecs::{
+        event::Event, message::Message, observer::On, resource::Resource, schedule::ScheduleLabel,
+        system::Commands,
+    };
 
-    use crate::{DeclarativePlugin, entry_points::EntryPoints, graph::PluginListExpansionError};
+    use crate::{
+        DeclarativePlugin, DeclrAppExt, entry_points::EntryPoints, graph::PluginListExpansionError,
+    };
 
     struct ShallowPluginA;
 
@@ -131,6 +136,9 @@ mod test {
         let order = expanded.build().unwrap().build().unwrap();
         assert_eq!(order.systems().count(), 4);
     }
+
+    #[test]
+    fn systems_actually_run() {}
 
     #[derive(Debug)]
     struct NonZstPluginE {
@@ -384,5 +392,124 @@ mod test {
             expanded,
             Err(PluginListExpansionError::TooManyPluginInstances(_))
         );
+    }
+
+    #[derive(Debug, Message)]
+    struct MessageA;
+
+    #[derive(Debug, Message)]
+    struct MessageB;
+
+    #[derive(Debug, Message)]
+    struct MessageC;
+
+    #[derive(Debug)]
+    struct MessagesPluginA;
+
+    impl DeclarativePlugin for MessagesPluginA {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output.add_message::<MessageA>().add_message::<MessageB>();
+        }
+    }
+
+    #[derive(Debug)]
+    struct MessagesPluginB;
+
+    impl DeclarativePlugin for MessagesPluginB {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output.add_message::<MessageB>().add_message::<MessageC>();
+        }
+    }
+
+    #[test]
+    fn messages() {
+        let list = (MessagesPluginA, MessagesPluginB).get_output();
+        let expanded = list.expand();
+        assert_matches!(expanded, Ok(_));
+        let expanded = expanded.unwrap();
+        let order = expanded.build().unwrap().build().unwrap();
+        assert_eq!(order.messages().count(), 3);
+    }
+
+    #[derive(Debug, ScheduleLabel, Hash, PartialEq, PartialOrd, Ord, Eq, Clone)]
+    struct MyLabelA;
+
+    #[derive(Debug, ScheduleLabel, Hash, PartialEq, PartialOrd, Ord, Eq, Clone)]
+    struct MyLabelB;
+
+    #[derive(Debug, Resource, Default)]
+    struct LabelTestResource(usize);
+
+    #[derive(Debug)]
+    struct LabelsPlugin;
+
+    impl DeclarativePlugin for LabelsPlugin {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output.add_schedule_after(MyLabelA, Startup);
+            output.add_schedule_after(MyLabelB, MyLabelA);
+            output.add_systems(MyLabelB, |mut commands: Commands| {
+                commands.insert_resource(LabelTestResource(4));
+            });
+        }
+    }
+
+    #[test]
+    fn labels() {
+        let list = LabelsPlugin.get_output();
+        let mut app = App::new();
+        let result = app.apply_declarative(list);
+        assert_matches!(result, Ok(_));
+        app.world_mut().run_schedule(MyLabelB);
+        app.world_mut().flush();
+        let result = app.world_mut().get_resource_or_init::<LabelTestResource>();
+        assert_eq!(result.0, 4);
+    }
+
+    #[test]
+    fn count_labels() {
+        let list = LabelsPlugin.get_output();
+        let expanded = list.expand();
+        assert_matches!(expanded, Ok(_));
+        let expanded = expanded.unwrap();
+        let order = expanded.build().unwrap().build().unwrap();
+        assert_eq!(order.labels().count(), 2);
+    }
+
+    #[derive(Event)]
+    struct ObserverEntityEvent;
+
+    struct ObserverPluginA;
+
+    impl DeclarativePlugin for ObserverPluginA {
+        fn build(&self, output: &mut crate::PluginOutput) {
+            output.add_systems(Startup, |mut commands: Commands| {
+                commands.trigger(ObserverEntityEvent);
+            });
+            output.add_observer(|_on: On<ObserverEntityEvent>, mut commands: Commands| {
+                commands.insert_resource(LabelTestResource(4));
+            });
+        }
+    }
+
+    #[test]
+    fn observers() {
+        let list = ObserverPluginA.get_output();
+        let mut app = App::new();
+        let result = app.apply_declarative(list);
+        assert_matches!(result, Ok(_));
+        app.world_mut().run_schedule(Startup);
+        app.world_mut().flush();
+        let result = app.world_mut().get_resource_or_init::<LabelTestResource>();
+        assert_eq!(result.0, 4);
+    }
+
+    #[test]
+    fn count_observers() {
+        let list = ObserverPluginA.get_output();
+        let expanded = list.expand();
+        assert_matches!(expanded, Ok(_));
+        let expanded = expanded.unwrap();
+        let order = expanded.build().unwrap().build().unwrap();
+        assert_eq!(order.observers().count(), 1);
     }
 }

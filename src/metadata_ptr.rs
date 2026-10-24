@@ -22,7 +22,6 @@ impl MetadataPtr {
         let ptr = NonNull::new(ptr)?.cast();
         // SAFETY: This uses a Layout derived from T
         unsafe { ptr.write(data) };
-
         Some(MetadataPtr {
             layout,
             ptr: ptr.cast(),
@@ -43,12 +42,8 @@ impl MetadataPtr {
             // SAFETY: we at least know if the data is the right shape and the type IDs are the same.
             let data: NonNull<T> = self.ptr.cast();
             // SAFETY: We are passing the original layout this type was constructed with.
-            if self.layout.size() != 0 {
-                self.already_dropped = true;
-                Ok(unsafe { Self::move_then_deallocate(data, self.layout) })
-            } else {
-                Err(self)
-            }
+            self.already_dropped = true;
+            Ok(unsafe { Self::move_then_deallocate(data, self.layout) })
         } else {
             Err(self)
         }
@@ -76,6 +71,11 @@ impl MetadataPtr {
     #[allow(unused)]
     pub fn erased_type_id(&self) -> TypeId {
         self.type_id
+    }
+
+    #[allow(unused)]
+    pub fn erased_layout(&self) -> Layout {
+        self.layout
     }
 }
 

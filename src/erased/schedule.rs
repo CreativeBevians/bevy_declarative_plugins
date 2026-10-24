@@ -1,3 +1,5 @@
+use std::any::{TypeId, type_name};
+
 use bevy_app::MainScheduleOrder;
 use bevy_ecs::{
     schedule::{IntoScheduleConfigs, Schedule, ScheduleLabel, Schedules},
@@ -53,7 +55,6 @@ impl ErasedScheduleLabel {
                 if !schedules.contains(other_label) {
                     schedules.insert(Schedule::new(other_label));
                 }
-                drop(schedules);
             })
     }
 }
@@ -76,10 +77,28 @@ impl StagedScheduleLabel {
                         let mut schedule_order = world.get_resource_or_init::<MainScheduleOrder>();
                         match erased.0.try_reverse_erase::<(S, BeforeOrAfter<O>)>() {
                             Ok((label, BeforeOrAfter::Before(other_label))) => {
-                                schedule_order.insert_before(other_label, label);
+                                if schedule_order.labels.contains(&other_label.intern()) {
+                                    schedule_order.insert_before(other_label, label);
+                                } else if schedule_order
+                                    .startup_labels
+                                    .contains(&other_label.intern())
+                                {
+                                    schedule_order.insert_startup_before(other_label, label);
+                                } else {
+                                    panic!("Expected {other_label:?} to exist.");
+                                }
                             }
                             Ok((label, BeforeOrAfter::After(other_label))) => {
-                                schedule_order.insert_after(other_label, label);
+                                if schedule_order.labels.contains(&other_label.intern()) {
+                                    schedule_order.insert_after(other_label, label);
+                                } else if schedule_order
+                                    .startup_labels
+                                    .contains(&other_label.intern())
+                                {
+                                    schedule_order.insert_startup_after(other_label, label);
+                                } else {
+                                    panic!("Expected {other_label:?} to exist.");
+                                }
                             }
                             Err(_) => {
                                 panic!("Incorrect label type.")
@@ -123,7 +142,15 @@ impl StagedSystem {
                             .get_resource_or_init::<Schedules>()
                             .add_systems(label, systems);
                     }
-                    _ => {}
+                    Err(e) => {
+                        panic!(
+                            "Could not apply system to world for {} {}. TypeIds are {:?}, {:?}",
+                            type_name::<L>(),
+                            type_name::<S>(),
+                            e.erased_type_id(),
+                            TypeId::of::<(L, S)>()
+                        )
+                    }
                 },
             },
         })
