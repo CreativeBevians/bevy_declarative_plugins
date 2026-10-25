@@ -71,8 +71,8 @@ pub trait DeclrAppExt {
     /// Add a declarative set of plugins to the app, solving for dependencies
     /// etc.
     ///
-    /// NOTE: This should only be called once, as in this preview we don't yet
-    ///
+    /// NOTE: This should only be called once, we don't account for multiple
+    /// calls to the solver.
     #[must_use]
     fn add_plugins_declarative(
         &mut self,
