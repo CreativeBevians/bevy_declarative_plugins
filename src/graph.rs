@@ -51,10 +51,7 @@ impl PluginList {
             if is_new_zst || !output.is_zero_sized_optimizable {
                 let type_id = output.working_plugin;
                 let (reg_id, dependencies) = graph.insert_node(item, output);
-                dependency_queue.extend(dependencies.0.into_iter().map(|d| {
-                    println!("{reg_id:?}");
-                    (reg_id, d)
-                }));
+                dependency_queue.extend(dependencies.0.into_iter().map(|d| (reg_id, d)));
                 if is_new_zst {
                     // If it's a ZST, we need to add it to the list of known ones.
                     zst_already_expanded.insert(type_id, reg_id);
@@ -289,7 +286,6 @@ impl PluginRegistrationGraph {
             let candidate = candidate_instance.registration_id;
             // For each plugin with a dependency, see if each of those dependents agree on this configuration.
             for depends_on in self.has_approvals_for_plugin(plugin_id) {
-                println!("Lol");
                 match depends_on.output.plugin_approval.get(&plugin_id) {
                     // If an approval function exists, and it approves, continue.
                     Some(approval) => {

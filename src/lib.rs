@@ -1,5 +1,6 @@
+/// A reference implementation for a bevy plugin system that supports
+/// dependencies.
 use core::any::Any;
-
 pub(crate) mod approval;
 pub(crate) mod erased;
 pub(crate) mod graph;
