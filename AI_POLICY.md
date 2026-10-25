@@ -1,0 +1,3 @@
+This reference implementation of "Declarative Plugins" is published under the Creative Bevians github organization, an "AI-sober" community. As such, "AI"-generated/assisted issues, code, prose, feedback, comments, rewrites, scoops, and ports are considered antithetical to what we're trying to achieve, or simply antagonistic. Adhering to a pro-social, education-first open source social contract is highly encouraged.
+
+This project is intended to be upstreamed, however this policy is not intended to be part of the upstreaming.

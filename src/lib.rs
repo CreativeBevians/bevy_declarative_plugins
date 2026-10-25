@@ -1,5 +1,5 @@
-/// A reference implementation for a bevy plugin system that supports
-/// dependencies.
+//! A reference implementation for a bevy plugin system that supports
+//! dependencies.
 use core::any::Any;
 pub(crate) mod approval;
 pub(crate) mod erased;
@@ -7,9 +7,10 @@ pub(crate) mod graph;
 pub(crate) mod metadata_ptr;
 /// Declarative Plugin public API.
 pub mod plugin_data;
+use crate::entry_points::EntryPoints;
+use crate::graph::ItemGraphError;
 pub use crate::graph::PluginListExpansionError;
 use crate::graph::PluginResolutionError;
-use crate::graph::{ItemGraphError, PluginList};
 #[allow(unused_imports)]
 use bevy_app::{App, Plugin};
 pub use erased::resource::ResourceTypeId;
@@ -18,9 +19,10 @@ pub use plugin_data::PluginOutput;
 pub use plugin_data::PluginTypeId;
 pub mod entry_points;
 
-pub struct EditorTooling;
-
-/// A declarative alternative to [`Plugin`].
+/// A declarative alternative to [`Plugin`]. Rather than modifying an [`App`],
+/// you modify a [`PluginOutput`] which is then processed later down the line.
+///
+/// The methods of [`PluginOutput`] mirror much of
 pub trait DeclarativePlugin: Any {
     /// Plugin registration function. Intentionally close to [`Plugin::build`].
     fn build(&self, output: &mut PluginOutput);
@@ -35,6 +37,10 @@ pub trait DeclarativePlugin: Any {
     ///
     /// TODO: Have this be used at all.
     #[allow(unused_variables)]
+    #[deprecated(
+        since = "0.0.1",
+        note = "Not actually used yet. Another design may be preferable."
+    )]
     fn build_render(&self, output: &mut PluginOutput<()>) {}
 
     /// Registration method for editor tools. This is here largely for
@@ -42,6 +48,10 @@ pub trait DeclarativePlugin: Any {
     ///
     /// TODO: Have this be used at all.
     #[allow(unused_variables)]
+    #[deprecated(
+        since = "0.0.1",
+        note = "Not actually used yet. Another design may be preferable."
+    )]
     fn build_editor(&self, output: &mut EditorTooling) {}
 
     /// When this is a zero-sized type, it will give the same [`PluginOutput`]
@@ -51,10 +61,20 @@ pub trait DeclarativePlugin: Any {
     }
 }
 
+/// A stand-in for an API that can expose information and behavior to an editor
+/// or equivalent tooling.
+pub struct EditorTooling;
+
 pub trait DeclrAppExt {
-    fn apply_declarative(
+    /// Add a declarative set of plugins to the app, solving for dependencies
+    /// etc.
+    ///
+    /// NOTE: This should only be called once, as in this preview we don't yet
+    ///
+    #[must_use]
+    fn add_plugins_declarative(
         &mut self,
-        entry_point_list: PluginList,
+        entry_point_list: impl EntryPoints,
     ) -> Result<(), DeclarativePluginError>;
 }
 
@@ -66,11 +86,12 @@ pub enum DeclarativePluginError {
 }
 
 impl DeclrAppExt for App {
-    fn apply_declarative(
+    fn add_plugins_declarative(
         &mut self,
-        entry_point_list: PluginList,
+        entry_point_list: impl EntryPoints,
     ) -> Result<(), DeclarativePluginError> {
         let graph = entry_point_list
+            .get_output()
             .expand()
             .map_err(DeclarativePluginError::ExpansionError)?;
         let mut graph = graph
@@ -478,9 +499,8 @@ mod test {
 
     #[test]
     fn labels() {
-        let list = LabelsPlugin.get_output();
         let mut app = App::new();
-        let result = app.apply_declarative(list);
+        let result = app.add_plugins_declarative(LabelsPlugin);
         assert_matches!(result, Ok(_));
         app.world_mut().run_schedule(MyLabelB);
         app.world_mut().flush();
@@ -516,9 +536,8 @@ mod test {
 
     #[test]
     fn observers() {
-        let list = ObserverPluginA.get_output();
         let mut app = App::new();
-        let result = app.apply_declarative(list);
+        let result = app.add_plugins_declarative(ObserverPluginA);
         assert_matches!(result, Ok(_));
         app.world_mut().run_schedule(Startup);
         app.world_mut().flush();
