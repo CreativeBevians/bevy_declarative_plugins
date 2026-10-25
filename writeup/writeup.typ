@@ -2,8 +2,8 @@
 
 #set par(justify: true)
 #set heading(numbering: "1.")
-#set page(margin: 4em)
-
+// #set page(margin: 4em)
+#show link: underline
 
 #let erased = math.italic("Erased")
 #let peek = $"peek"$
@@ -35,16 +35,28 @@
 
 #let cols = 1
 
+#title()[Declarative Plugins for ECS Worlds - Draft]
+
+#outline()
+
 #columns(cols)[
-= Declarative Plugins for ECS Worlds
+
+= Intro
 
 There have been several attempts at trying to make the Bevy plugin system more expressive and feature-rich. This is yet another attempt, we will see if it actually goes anywhere.
 
 The inspiration for this approach was first thinking about how build systems like Cargo or npm manage dependencies, as well as asking myself "how could hot-patching support the addition/removal of systems." The latter has not been addressed here, but the API surface of plugins has been made more restrictive in ways that make it possible to start reasoning about "diffing" plugin registration in future.
 
-== Motivation
+A declarative model of plugins would, rather than hand the user arbitrary code execution on the `World` during registration, let the user expose a data structure for Bevy to turn into a running Bevy app.
 
-Bevy plugins can't have dependencies without worrying about what happens when things get registered more than once. This works fine if you own the entirety of what you're registering, by breaking up each module of your bevy program 
+#figure(caption: [A plugin and its output.])[
+  $A$ is the initial plugin data.\
+  $output(A)$ is the data structure that is produced by running the plugin registration function on that data.
+]
+
+= Motivation
+
+Bevy plugins can't have dependencies without worrying about what happens when things get registered more than once. This works fine if you own the entirety of what you're registering by breaking up each rust module of your bevy program into its own distinct plugin and assume other plugins you need from your project are always present. This also works fine if your 3rd party bevy dependencies do not register their own dependencies, 
 
 The current plugin system works as a sequence of function calls that directly modify the game world before running the game loop. This is a simple API surface to reason about until you want to develop more complex frameworks or projects where assumptions can be broken about what is registered where. This also makes developing "deep" plugins difficult: if you're developing a plugin that assumes that the Avian physics engine is present you have to register that assumption in text you assume the user will read.
 
@@ -134,14 +146,50 @@ A declarative model puts a system between the _data_ provided by the plugin auth
 
 (3) is of particular interest as a means to better enable game-specific tooling i.e. a "BSN language server" mode for a game program, in a world where the Plugin API is extended.
 
-== Declarative Model / Graph Implementation
+= Data Structures
 
-A declarative model of plugins would, rather than hand the user arbitrary code execution on the World during registration, let the user expose a data structure for Bevy to turn into a running Bevy app.
+"Graph Solving" is, conceptually, a bit overwhelming. We do not need to represent the full breadth of Directed Acyclical Graphs to do what we want to do, though.
 
-#figure(caption: [A plugin and its output.])[
-  $A$ is the initial plugin data.\
-  $output(A)$ is the data structure that is produced by running the plugin registration function on that data.
-]
+== Working Backwards: What We'll Register
+
+We want to be able to hand off arbitrary item types to a final `World` in an order we decide once we've performed all our processing. To do this, we'll represent the items we're registering as an enum, and we'll store those items in a vec:
+
+#figure(caption: [Enum describing what we can register with an `World`.])[
+```rust
+enum DeclrItem {
+    Message(MessageRegistration),
+    System(StagedSystem),
+    ScheduleLabel(StagedScheduleLabel),
+    Observer(Observer),
+    Resource(StagedResource),
+}
+```]<registration-enum>
+
+#figure(caption: [Ordered list of plugin items.])[
+```rust
+struct OrderedPluginItems(Vec<DeclrItem>);
+```
+]<registration-list>
+
+This @registration-enum is not the sum of all things we can do to a `World`, nor does it encompass all the things we want to 
+
+== Solved Graph
+
+== Unsolved Graph
+
+== Approval Functions
+
+In Cargo, and other modern package managers, versions of dependencies are usually chosen through some form of SAT solve on the version numbers of the dependencies.
+
+Configuration for plugins is not merely constrained to version numbers, which cargo does for us already in Rust (and by extension Bevy.) Semver is used #link("https://doc.rust-lang.org/cargo/reference/resolver.html#semver-compatibility")[in cargo], which allows users to specify a range of appropriate versions using a string.
+
+Plugin configurations in Bevy are structs and enums. There isn't a simple domain specific language we can use to determine which configuration for a plugin is appropriate. Instead, we can fall back to 
+
+Unlike with versioning, which cargo solves for us already, we only rarely need to care about plugin configuration.
+
+== Entry Points
+
+= Algorithms
 
 = Implementation Details
 
@@ -207,8 +255,8 @@ We can make a few assumptions about a plugin type that is _Zero-Sized_.
 
 1. Any two instances of a `'static` ZST are the same semantically. $A = A$
 2. The output of any two instances of a ZST are the same: \
-#figure(caption: [])[
-$"let" a_1 = "Output"(A)\ "let" a_2 = "Output"(A)\ a_1 = a_2$
+#figure(caption: [The assumed equivalence between two Zero-Sized plugins computed at different times.])[
+$"let" a_1 = "Output"(A)\ "let" a_2 = "Output"(A)\ a_1 equiv a_2$
 ]
 
 (2) can _technically_ be violated by users running code dependent on information available to the machine it is running on (i.e. random information, clock time). This is mediated by making these assumptions and depending on having access to the Type ID of each type, we can choose to only ever run the registration function once for _ZST_ plugins.
@@ -290,27 +338,8 @@ The problem that we want to solve can quickly spiral into a subgraph search. Wit
 Instead of tracking which specific instance of a plugin depends on which specific instance of another plugin, we instead track which specific instance of a plugin depends on a plugin type. That is, instead of tracking $A_1 ->_"dep" C_2$, we track $A_1 ->_"dep" C$ + A function that determines if a dependency's configuration is appropriate. See: @approvalh.
 
 #figure(caption: [Collection Graph which houses all instances of all plugins and the the dependencies between things.])[
-  #if_html(diagram(
-    node-stroke: 0.1em,
-    node-shape: rect,
-    spacing: 4em,
-    node((0, 0), [
-      $A$\
-      ${A_1,A_2,A_3}$
-      ], name: <A>),
-    node((-1, 1), [$B$\ ${B_1}$], name: <B>),
-    node((1, 1), [
-      $C$\
-      ${C_1, C_2}$
-      ], name: <C>),
-    edge((0, 0.2), <C>, "-|>"),
-    edge((0.2, 0.2), <C>, label: [$A_1,A_2,A_3 ->_"dep" C$], "-|>"),
-    edge((-0.2, 0.2), <C>, "-|>"),
-    edge((-0.2, 0.2), <B>, label: [$A_1 ->_"dep" B$], "-|>"),
-  
-    edge((1,1), <B>, label: [$C_1,C_2 ->_"dep" B$], "-|>"),
-    edge((1,1.2), <B>, "-|>")
-  ))
+  #import "diagrams/dependency-graphs.typ": plugins-grouped
+  #if_html(plugins-grouped())
 ]
 
 This lets us track a version of plugin dependency where we do not need to compute arbitrary subgraphs, instead we only need to find one candidate per plugin type.
@@ -346,21 +375,8 @@ The assumption here is that most plugins will approve of any non-ZST plugin's va
 ] <approval-maths>
 
 #figure(caption:[Expansion of the conflict in @plugin-conflict, showing the results of the approval functions.])[
-  #if_html(diagram(
-    node-stroke: .1em,
-    spacing: 2em,
-    node((-1, 1), [$C, f : option(D -> bool)$], name: <C>),
-    node((1, 1), [$B, g : option(D -> bool)$], name: <B>),
-    node((-1, 6), $D_1$, name: <D1>),
-    node((1, 6), $D_2$, name: <D2>),
-    edge((-1, 0), <C>, "--|>"),
-    edge(<C>, <D1>, "-|>"),
-    edge(<B>, <D2>, "-|>"),
-    edge(<B>, <D1>, "-|>-", stroke: green, label: [$g(D_1) = "true"$], bend: -15deg),
-    edge(<C>, <D1>, "-|>-", stroke: green, label: [$f(D_1) = "true"$], bend: -45deg),
-    edge(<C>, <D2>, "-|>-", stroke: red, label: [$f(D_2) = "false"$], bend: 15deg),
-    edge(<B>, <D2>, "-|>-", stroke: green, label: [$g(D_2) = "true"$], bend: 45deg),
-  ))
+  #import "diagrams/dependency-graphs.typ": conflict
+  #if_html(conflict())
 ] <conflict-expansion>
 
 In the above diagram, an expansion of the conflict in @plugin-conflict, we see that the approval functions $f in output(C), g in output(B)$ are applied to each instance of plugins of type $D.$
@@ -386,7 +402,7 @@ Rather than evaluating subgraphs, we can shortcut a good amount of checking plug
 
 If we come across a plugin config that is disapproved by anything that depends on it, then we can decide to avoid evaluating it at all.
 
-#figure(caption: [Graph Construction Algorithm with Proactive Culling])[
+#figure(caption: [Graph Construction Algorithm with Proactive Culling.])[
   // #set edge(crossing: true)
   #import "diagrams/algo-expansion.typ": algo-expansion
   #if_html(algo-expansion())
@@ -401,9 +417,9 @@ We can construct a plugin subgraph that, left unchecked, would consume all resou
 3. A requires B(A.0 + 1), approves only if B.0 > A.0.
 4. B requires A(B.0 + 1), approves only if A.0 > B.0.
 
-We can avoid this by simply having a limit for the number of instances of a single plugin, and as the graph is constructed from entry points (distance=0) outwards this avoids a situation where game developer intent is overruled.
+We avoid this by having a limit for the number of instances of a single plugin, and as the graph is constructed from entry points (distance=0) and the distance increases the further away from an entry point it is this avoids a situation where game developer intent is overruled.
 
-Detecting repeating sub-cycles in a graph may be more desirable from an academic interest standpoint, but to keep startup times in a end-user friendly timescale having a low ceiling on how many instances of a plugin can be registered before it's ignored makes more sense.
+Detecting repeating sub-cycles in a graph may be more desirable from a point of soundness, but having a low ceiling on how many instances of a plugin can be registered before it's ignored makes more sense for keeping startup times in player/user-friendly timescales.
 
 === Many Good Candidates
 
@@ -414,26 +430,8 @@ Once we have our candidates for plugin configurations, we need to evaluate which
 Distance from entry point corresponds loosely to the intent of a plugin / game author. This is to say, a game developer can override the configuration of plugins that are further down their supply chain by declaring plugin dependencies closer to the entry point.
 
 #figure(caption: [Entry point distances.])[
-  #if_html(diagram(
-    node-stroke: .1em,
-    spacing: 1em,
-    node((-1, 0), $A$, name: <A>),
-    node((0, 0), $B$, name: <B>),
-    node((1, 0), $C$, name: <C>),
-    node((2, 0), [$D_4$\ distance = 0], name: <D4>),
-    node((-1, 1), [$D_1$\ distance = 1], name: <D1>),
-    node((0, 3), [$D_2$\ distance = 3], name: <D2>),
-    node((1, 2), [$D_3$\ distance = 2], name: <D3>),
-    node((0, 1), $E$, name: <bdots1>),
-    node((0, 2), $G$, name: <bdots2>),
-    node((1, 1), $F$, name: <cdots1>),
-    edge(<A>, <D1>, "-|>"),
-    edge(<B>, <bdots1>, "-|>"),
-    edge(<bdots1>, <bdots2>, "-|>"),
-    edge(<bdots2>, <D2>, "-|>"),
-    edge(<C>, <cdots1>, "-|>"),
-    edge(<cdots1>, <D3>, "-|>"),
-  ))
+  #import "diagrams/dependency-graphs.typ": distance
+  #if_html(distance())
 ]
 
 We prefer lower distances as this is a fairly reliable proxy for _user intent_. While it's still possible for an entry point plugin to end up not approved compared to a deeper one, this should be an uncommon occurrence. TBD how this works out in practice.
@@ -480,8 +478,6 @@ None of what's been stated here is a "true" declarative API, rather it is a buil
 
 #figure(caption: [])[
 ```rust
-
-trait 
 
 trait DeclarativePlugin {
   fn systems(&self) -> Box<dyn Systems> {
