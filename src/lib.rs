@@ -22,7 +22,9 @@ pub mod entry_points;
 /// A declarative alternative to [`Plugin`]. Rather than modifying an [`App`],
 /// you modify a [`PluginOutput`] which is then processed later down the line.
 ///
-/// The methods of [`PluginOutput`] mirror much of
+/// The methods of [`PluginOutput`] mirror much of what people access during
+/// plugin registration, but doesn't allow direct access to `World` before
+/// plugins have been resolved.
 pub trait DeclarativePlugin: Any {
     /// Plugin registration function. Intentionally close to [`Plugin::build`].
     fn build(&self, output: &mut PluginOutput);
