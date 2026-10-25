@@ -2,3 +2,8 @@
 
 = Plugins Overhaul
 
+== Motivations
+
+== Data structures
+
+== Algorithms
