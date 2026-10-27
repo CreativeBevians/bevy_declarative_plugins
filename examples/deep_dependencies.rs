@@ -11,8 +11,8 @@
 //! ```
 //!
 //! `A`, `B`, and `C` are the "entry points" — what the app author actually
-//! registers. The behavior of these plugins is artificial, in that they don't
-//! represent a likely
+//! registers. The behavior of these plugins is illustrative, rather than
+//! reflective of most Bevy app structures.
 //!
 //! Plugin Dependencies are resolved via heuristics and approval mechanisms,
 //! and are explored through a breadth-first search until an approved version
