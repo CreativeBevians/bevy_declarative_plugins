@@ -2,7 +2,7 @@ use core::{alloc::Layout, any::TypeId, ptr::NonNull};
 use std::alloc::{alloc, dealloc};
 
 /// Fully type erased pointer that owns the data, knows the layout, knows the
-/// [`TypeId`], and a function pointer to a drop fn.
+/// [`TypeId`], and has a function pointer to a drop implementation.
 pub(crate) struct MetadataPtr {
     layout: Layout,
     ptr: NonNull<()>,

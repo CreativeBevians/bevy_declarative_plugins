@@ -17,6 +17,7 @@ use std::{any::type_name, boxed::Box, vec::Vec};
 use crate::{
     App, DeclarativePlugin,
     approval::Approval,
+    entry_points::AddDependency,
     erased::{
         resource::{ErasedResource, ResourceTypeId, StagedResource},
         schedule::{BeforeOrAfter, StagedScheduleLabel, StagedSystem},
@@ -197,6 +198,20 @@ impl PluginOutput {
     pub fn add_message<M: Message + 'static>(&mut self) -> &mut Self {
         self.messages
             .insert(TypeId::of::<M>(), MessageRegistration::new::<M>());
+        self
+    }
+
+    /// Alias for [`Self::add_dependencies`].
+    pub fn add_plugins<P: AddDependency>(&mut self, dependencies: P) -> &mut Self {
+        self.add_dependencies(dependencies)
+    }
+
+    /// Depend on plugins. The configuration you pass here may not necessarily
+    /// be the final configuration that gets used. If you have requirements on
+    /// the configuration of a plugin, consider calling the method
+    /// [`AddDependency::with_approval`] on your dependency.
+    pub fn add_dependencies<P: AddDependency>(&mut self, dependencies: P) -> &mut Self {
+        dependencies.add_to_output(self);
         self
     }
 
