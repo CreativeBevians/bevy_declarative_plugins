@@ -56,6 +56,8 @@ A declarative model of plugins would, rather than hand the user arbitrary code e
 
 = Motivation
 
+Bevy plugins are functions that take a `&mut App`. Recursive plugin registration works by plugin registration functions calling `App::add_plugins` themselves.
+
 Bevy plugins can't have dependencies without worrying about what happens when things get registered more than once. This works fine if you own the entirety of what you're registering by breaking up each rust module of your bevy program into its own distinct plugin and assume other plugins you need from your project are always present. This also works fine if your 3rd party bevy dependencies do not register their own dependencies, 
 
 The current plugin system works as a sequence of function calls that directly modify the game world before running the game loop. This is a simple API surface to reason about until you want to develop more complex frameworks or projects where assumptions can be broken about what is registered where. This also makes developing "deep" plugins difficult: if you're developing a plugin that assumes that the Avian physics engine is present you have to register that assumption in text you assume the user will read.
@@ -112,6 +114,7 @@ This is because each plugin registration is a trait method of `(&self, &mut App)
 ```rs
 impl Plugin for UserPluginB {
   fn register(&self, app: &mut App) {
+    // Add another plugin to the app.
     app.add_plugins(UserGameSystems);
     // Add items to world.
     app.add_systems(Update, (system_10, system_11));
@@ -121,30 +124,6 @@ impl Plugin for UserPluginB {
 }
 ```
 ]
-
-== Upsides of the Current Model
-
-It's simple! Functions that add things directly to a `&mut App`, directly to `World`, is a really straightforward model for how to think about Plugins.
-
-The ways plugins currently work doesn't take that much thought to reason about in a shallow ecosystem. It makes sense
-
-== Downsides of the Current Model
-
-The current model can be compared to C/C++ style "Header Files" in terms of how a Bevy developer is expected to manage constraints and risk. Each author is trusted to understand the context of plugin registration and not do anything too wild, dependencies are rare because everyone defaults to conservative behavior.
-
-1. Plugin dependencies aren't managed.
-2. Even if plugin dependencies were managed, different plugin configurations are not managed. It would be a "First-Come First Serve" model, which does not scale to deep plugin dependency trees that cross author and crate borders.
-3. Bevy is coming up towards needing more broad _tooling surfaces_ for stuff like Editors.
-
-== Potential in a Declarative Model
-
-A declarative model puts a system between the _data_ provided by the plugin author and the _app_ that runs the Bevy app. This allows us to:
-
-1. Resolve duplicates.
-2. Enforce well-formed ordering of different kinds of data.
-3. Decide to interpret that data in more ways than just "Run the Game."
-
-(3) is of particular interest as a means to better enable game-specific tooling i.e. a "BSN language server" mode for a game program, in a world where the Plugin API is extended.
 
 = Data Structures
 
@@ -342,9 +321,9 @@ Instead of tracking which specific instance of a plugin depends on which specifi
   #if_html(plugins-grouped())
 ]
 
-This lets us track a version of plugin dependency where we do not need to compute arbitrary subgraphs, instead we only need to find one candidate per plugin type.
+This lets us track a version of plugin dependency where we do not need to compute arbitrary sub graphs, instead we only need to find one candidate per plugin type.
 
-This is represented a hash map of the type id of a plugin and a vector of the instances of that plugin that have been registered:
+This is represented a hashmap of the type id of a plugin and a vector of the instances of that plugin that have been registered:
 
 ```rust
 HashMap<>
@@ -356,23 +335,15 @@ How do we resolve these trees then? The key lies in the "#peek" function describ
 
 We define the "approval function" as a struct like so:
 
-#figure(caption: [])[
+#figure(caption: [Definition an Approval function.])[
 ```rust
 struct Approval<T: ?Sized> {
     approval_fn: Option<Box<dyn Fn(&T) -> bool>>,
 }
 ```
-]
+]<approval-def>
 
 The assumption here is that most plugins will approve of any non-ZST plugin's value. For this reason, if `approval_fn` is `None`, it will always return true for any value.
-
-#figure(caption: [Definitions of an approval type and its behavior in practice.])[
-  $"approve" := option(T -> bool)$ <approvetype> \ 
-  $"approve"(x: T) := cases(
-  "true" "if" "approve" = "None",
-  f(x) "if" "approve" = "Some"(f: T -> bool)
-)$ <approvedef>
-] <approval-maths>
 
 #figure(caption:[Expansion of the conflict in @plugin-conflict, showing the results of the approval functions.])[
   #import "diagrams/dependency-graphs.typ": conflict
@@ -402,7 +373,7 @@ Rather than evaluating subgraphs, we can shortcut a good amount of checking plug
 
 If we come across a plugin config that is disapproved by anything that depends on it, then we can decide to avoid evaluating it at all.
 
-#figure(caption: [Graph Construction Algorithm with Proactive Culling.])[
+#figure(caption: [Breadth-first Graph Construction Algorithm with Proactive Culling.])[
   // #set edge(crossing: true)
   #import "diagrams/algo-expansion.typ": algo-expansion
   #if_html(algo-expansion())
