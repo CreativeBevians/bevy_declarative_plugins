@@ -125,6 +125,8 @@ macro_rules! impl_add_dependency {
     () => {};
     ($($i:tt $t2:tt),+) => {
         impl <$($t2,)+> AddDependency for ($($t2 ),+) where $($t2: AddDependency,)+ {
+            // For groups there isn't a canonical "plugin" to drill down to, so
+            // we use the never type for it.
             type Plugin = !;
             fn add_to_output(self, output: &mut PluginOutput) {
                 let ($($i),+) = self;
