@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! A reference implementation for a bevy plugin system that supports
 //! dependencies.
 use core::any::Any;
@@ -13,6 +14,7 @@ pub use crate::graph::PluginListExpansionError;
 use crate::graph::PluginResolutionError;
 #[allow(unused_imports)]
 use bevy_app::{App, Plugin};
+// Need to re-export this for error types.
 pub use erased::resource::ResourceTypeId;
 pub use erased::schedule::BeforeOrAfter;
 pub use plugin_data::PluginOutput;
@@ -25,6 +27,10 @@ pub mod entry_points;
 /// The methods of [`PluginOutput`] mirror much of what people access during
 /// plugin registration, but doesn't allow direct access to `World` before
 /// plugins have been resolved.
+///
+/// For applying things to the Render app, use the
+/// [`DeclarativePlugin::build_render`] method. This method cannot add
+/// dependencies but can otherwise still add most items.
 pub trait DeclarativePlugin: Any {
     /// Plugin registration function. Intentionally close to [`Plugin::build`].
     fn build(&self, output: &mut PluginOutput);
@@ -67,6 +73,7 @@ pub trait DeclarativePlugin: Any {
 /// or equivalent tooling.
 pub struct EditorTooling;
 
+/// Extension trait for [`App`].
 pub trait DeclrAppExt {
     /// Add a declarative set of plugins to the app, solving for dependencies
     /// etc.
@@ -80,10 +87,14 @@ pub trait DeclrAppExt {
     ) -> Result<(), DeclarativePluginError>;
 }
 
+/// Errors that can occur during declarative plugin registration.
 #[derive(Debug)]
 pub enum DeclarativePluginError {
+    /// The plugin list could not be expanded from the list of plugins.
     ExpansionError(PluginListExpansionError),
+    /// There was a missing candidate for a plugin or resource type.
     ResolutionError(PluginResolutionError),
+    /// Plugin selection failed in some way.
     ItemGraphError(ItemGraphError),
 }
 
@@ -100,7 +111,7 @@ impl DeclrAppExt for App {
             .build()
             .map_err(|(err, _)| DeclarativePluginError::ItemGraphError(err))?;
         let final_order = graph
-            .build()
+            .try_finalize()
             .map_err(DeclarativePluginError::ResolutionError)?;
         final_order.apply_to_app(self);
         Ok(())
@@ -118,7 +129,9 @@ mod test {
     };
 
     use crate::{
-        DeclarativePlugin, DeclrAppExt, entry_points::EntryPoints, graph::PluginListExpansionError,
+        DeclarativePlugin, DeclrAppExt,
+        entry_points::{AddDependency, EntryPoints},
+        graph::PluginListExpansionError,
     };
 
     struct ShallowPluginA;
@@ -143,7 +156,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 2);
     }
 
@@ -179,7 +192,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 4);
     }
 
@@ -215,7 +228,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 1);
     }
 
@@ -267,7 +280,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 1);
     }
 
@@ -407,11 +420,9 @@ mod test {
     impl DeclarativePlugin for InfiniteA {
         fn build(&self, output: &mut crate::PluginOutput) {
             let num = self.num;
-            output
-                .dependency_builder()
-                .with_config(InfiniteB { num: self.num + 1 })
-                .with_approval(move |inf_b| inf_b.num > num)
-                .build();
+            output.add_plugins(
+                InfiniteB { num: self.num + 1 }.with_approval(move |inf_b| inf_b.num > num),
+            );
         }
     }
 
@@ -422,11 +433,9 @@ mod test {
     impl DeclarativePlugin for InfiniteB {
         fn build(&self, output: &mut crate::PluginOutput) {
             let num = self.num;
-            output
-                .dependency_builder()
-                .with_config(InfiniteA { num: self.num + 1 })
-                .with_approval(move |inf_a| inf_a.num > num)
-                .build();
+            output.add_plugins(
+                InfiniteA { num: self.num + 1 }.with_approval(move |inf_a| inf_a.num > num),
+            );
         }
     }
 
@@ -473,7 +482,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.messages().count(), 3);
     }
 
@@ -516,7 +525,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.labels().count(), 2);
     }
 
@@ -553,7 +562,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.observers().count(), 1);
     }
 }

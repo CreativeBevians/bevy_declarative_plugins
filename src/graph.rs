@@ -19,8 +19,45 @@ use crate::{
     plugin_data::{MessageRegistration, PluginDependency, PluginTypeId},
 };
 
+/// Error type for problems during the breadth-first "Expansion" phase.
 #[derive(Debug)]
 pub enum PluginListExpansionError {
+    /// Too many instances of a plugin were found. This can be caused by a very
+    /// deep dependency graph, or it can more likely be caused by a nontrivial
+    /// cycle of plugins which register conflicting and ever-changing
+    /// configurations. Consider the following:
+    ///
+    /// ```
+    /// use bevy_declarative_plugins::{DeclarativePlugin, PluginOutput};
+    /// use bevy_declarative_plugins::entry_points::*;
+    ///
+    /// pub struct InfiniteA {
+    ///     num: usize,
+    /// }
+    ///
+    /// impl DeclarativePlugin for InfiniteA {
+    ///     fn build(&self, output: &mut PluginOutput) {
+    ///         let num = self.num;
+    ///         output.add_plugins(InfiniteB { num: self.num + 1 }.with_approval(move |inf_b| inf_b.num > num));
+    ///     }
+    /// }
+    ///
+    /// pub struct InfiniteB {
+    ///     num: usize,
+    /// }
+    ///
+    /// impl DeclarativePlugin for InfiniteB {
+    ///     fn build(&self, output: &mut PluginOutput) {
+    ///         let num = self.num;
+    ///         output.add_plugins(InfiniteA { num: self.num + 1 }.with_approval(move |inf_a| inf_a.num > num));
+    ///     }
+    ///}
+    /// ```
+    ///
+    /// The registering either of the above plugins could cause the graph to
+    /// expand forever. Instead of letting this OOM the machine it's running
+    /// on, we have a maximum number of instances that can be found before
+    /// erroring.
     TooManyPluginInstances(PluginTypeId),
 }
 
@@ -30,16 +67,19 @@ pub struct PluginList {
 }
 
 impl PluginList {
+    /// Add a set of entry points to the existing list.
     pub(crate) fn extend_with<P: EntryPoints>(&mut self, entry_point: P) -> &mut Self {
         entry_point.add_to_list(self);
         self
     }
 
-    /// Expand the list of entry point plugins into a full graph. Ignores
-    /// recurring ZSTs.
+    /// Expand the list of entry point plugins into a full graph of possible
+    /// plugin candidates. Ignores recurring ZSTs and errors on too many
+    /// instances of a given type to prevent infinite expansion. See:
+    /// [`PluginListExpansionError::TooManyPluginInstances`].
     pub(crate) fn expand(mut self) -> Result<PluginRegistrationGraph, PluginListExpansionError> {
         let mut zst_already_expanded: HashMap<PluginTypeId, RegistrationId> = HashMap::new();
-        let mut graph = PluginRegistrationGraph::new();
+        let mut graph = PluginRegistrationGraph::new(250);
         for (_, output) in &mut self.nodes {
             // Mark entry points.
             output.is_entry_point = true;
@@ -64,7 +104,7 @@ impl PluginList {
         // mean moving this logic to the PluginRegistrationGraph building side.
         while let Some((from, dependency)) = dependency_queue.pop_front() {
             let plugin_id = dependency.type_id;
-            if graph.count_instances(plugin_id) > graph.max_plugin_repeats {
+            if graph.count_instances(plugin_id) > graph.max_repeat_instances {
                 return Err(PluginListExpansionError::TooManyPluginInstances(plugin_id));
             }
             if !zst_already_expanded.contains_key(&dependency.type_id)
@@ -93,7 +133,7 @@ impl PluginList {
                     // dependencies they do register.
                     if let Some(dependency_source) = graph.get(reg_id)
                         && graph
-                            .instances(dependency.type_id)
+                            .instances_of_plugin(dependency.type_id)
                             .filter_map(|existing_instance| {
                                 let source_approval = dependency_source
                                     .output
@@ -134,6 +174,7 @@ impl PluginList {
     }
 }
 
+/// Sequential identifier for plugin registration.
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Clone, Copy)]
 pub(crate) struct RegistrationId(usize, PluginTypeId);
 
@@ -143,18 +184,23 @@ impl RegistrationId {
     }
 }
 
-pub(crate) struct PluginNode {
+/// A node in the expanded graph representing the items a plugin wants to
+/// register.
+pub(crate) struct PluginInstance {
+    /// Sequential registration identifier.
     pub(crate) registration_id: RegistrationId,
+    /// Type-erased plugin configuration data.
     pub(crate) plugin_data: Box<dyn DeclarativePlugin>,
+    /// The items the plugin wants to add to the App.
     pub(crate) output: PluginOutput<()>,
     // TODO: actually track which plugin added each plugin.
     // so that we can reliably track this information.
     pub(crate) distance_from_entry: Option<usize>,
 }
 
-impl Debug for PluginNode {
+impl Debug for PluginInstance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PluginNode")
+        f.debug_struct("PluginInstance")
             .field("registration_id", &self.registration_id)
             .field("plugin_data", &"{...}")
             .field("output", &"{...}")
@@ -163,11 +209,19 @@ impl Debug for PluginNode {
     }
 }
 
+/// The expanded, but not yet solved, graph store for plugins.
+///
+/// Instead of having a "full" node for each plugin instance, we have one node
+/// per plugin type (i.e all instances of a plugin `A` will be in the same
+/// node.) This reflects how a plugin type can register another plugin type as
+/// a dependency but cannot depend on a specific instance. This lets us solve
+/// dependencies when we have more than one candidate across the dependency
+/// graph.
 pub(crate) struct PluginRegistrationGraph {
     registration_counter: usize,
-    nodes: HashMap<PluginTypeId, Vec<PluginNode>>,
+    nodes: HashMap<PluginTypeId, Vec<PluginInstance>>,
     dependency_edges: HashMap<RegistrationId, Vec<PluginTypeId>>,
-    max_plugin_repeats: usize,
+    max_repeat_instances: usize,
 }
 
 impl Debug for PluginRegistrationGraph {
@@ -181,21 +235,27 @@ impl Debug for PluginRegistrationGraph {
 }
 
 impl PluginRegistrationGraph {
+    /// Generate a new, unique [`RegistrationId`]. Increments an internal
+    /// counter.
     fn new_id(&mut self, plugin_id: PluginTypeId) -> RegistrationId {
         let id = RegistrationId(self.registration_counter, plugin_id);
         self.registration_counter += 1;
         id
     }
 
-    pub(crate) fn new() -> Self {
+    /// Create a new, empty graph. `max_repeat_instances` dictates how many
+    /// instances the graph expansion algorithm will allow before erroring.
+    /// See: [`PluginListExpansionError::TooManyPluginInstances`].
+    pub(crate) fn new(max_repeat_instances: usize) -> Self {
         Self {
             registration_counter: 0,
             nodes: HashMap::new(),
             dependency_edges: HashMap::new(),
-            max_plugin_repeats: 100,
+            max_repeat_instances,
         }
     }
 
+    /// Count the number of instances of a given plugin type.
     pub(crate) fn count_instances(&self, plugin_id: PluginTypeId) -> usize {
         self.nodes
             .get(&plugin_id)
@@ -213,7 +273,7 @@ impl PluginRegistrationGraph {
         let registration_id = self.new_id(plugin_id);
         let (output, dependencies) = output.extract_dependencies();
         let distance_from_entry = if output.is_entry_point { Some(0) } else { None };
-        let node = PluginNode {
+        let node = PluginInstance {
             registration_id,
             plugin_data,
             output,
@@ -223,8 +283,8 @@ impl PluginRegistrationGraph {
         (registration_id, dependencies)
     }
 
-    pub(crate) fn build(self) -> Result<ItemsGraph, (ItemGraphError, Self)> {
-        ItemsGraph::new(self)
+    pub(crate) fn build(self) -> Result<DependenciesSolvedGraph, (ItemGraphError, Self)> {
+        DependenciesSolvedGraph::new(self)
     }
 
     pub(crate) fn can_build(&self) -> bool {
@@ -245,7 +305,13 @@ impl PluginRegistrationGraph {
     /// Removes the candidates from the graph.
     pub(crate) fn extract_candidates(
         &mut self,
-    ) -> Result<(Vec<PluginNode>, HashMap<PluginTypeId, Vec<PluginTypeId>>), ()> {
+    ) -> Result<
+        (
+            Vec<PluginInstance>,
+            HashMap<PluginTypeId, Vec<PluginTypeId>>,
+        ),
+        (),
+    > {
         let candidate_ids = self.naive_candidates()?;
         let mut extracted = Vec::with_capacity(candidate_ids.len());
         let mut edges = HashMap::new();
@@ -282,7 +348,7 @@ impl PluginRegistrationGraph {
         let mut working = None;
         // We have two loops here, the outer loop is to go through each candidate.
         // The inner loop is to find out if there is any version of this
-        'outer: for candidate_instance in self.instances(plugin_id) {
+        'outer: for candidate_instance in self.instances_of_plugin(plugin_id) {
             let candidate = candidate_instance.registration_id;
             // For each plugin with a dependency, see if each of those dependents agree on this configuration.
             for depends_on in self.has_approvals_for_plugin(plugin_id) {
@@ -330,8 +396,8 @@ impl PluginRegistrationGraph {
         working.ok_or(())
     }
 
-    pub(crate) fn get(&self, registration_id: RegistrationId) -> Option<&PluginNode> {
-        self.instances(registration_id.plugin_id())
+    pub(crate) fn get(&self, registration_id: RegistrationId) -> Option<&PluginInstance> {
+        self.instances_of_plugin(registration_id.plugin_id())
             .find(|node| node.registration_id == registration_id)
     }
 
@@ -340,8 +406,8 @@ impl PluginRegistrationGraph {
     pub(crate) fn has_approvals_for_plugin(
         &self,
         plugin_id: PluginTypeId,
-    ) -> impl Iterator<Item = &PluginNode> {
-        self.nodes().filter_map(move |node| {
+    ) -> impl Iterator<Item = &PluginInstance> {
+        self.all_instances().filter_map(move |node| {
             let item = node.output.plugin_approval.get(&plugin_id)?;
             if item.is_trivially_true() {
                 return None;
@@ -350,26 +416,40 @@ impl PluginRegistrationGraph {
         })
     }
 
-    pub(crate) fn nodes(&self) -> impl Iterator<Item = &PluginNode> {
+    /// Iterate over every plugin instance in the graph.
+    pub(crate) fn all_instances(&self) -> impl Iterator<Item = &PluginInstance> {
         self.nodes.iter().flat_map(|(_, nodes)| nodes.iter())
     }
 
+    /// Iterate over the IDs for each plugin in the graph.
     pub(crate) fn plugin_ids(&self) -> impl Iterator<Item = PluginTypeId> {
         self.nodes.iter().map(|(k, _)| *k)
     }
 
-    pub(crate) fn instances(&self, plugin_id: PluginTypeId) -> impl Iterator<Item = &PluginNode> {
+    /// Iterate over every instance for a given plugin type.
+    pub(crate) fn instances_of_plugin(
+        &self,
+        plugin_id: PluginTypeId,
+    ) -> impl Iterator<Item = &PluginInstance> {
         self.nodes
             .get(&plugin_id)
             .into_iter()
             .flat_map(|instances| instances.iter())
     }
 
+    /// All the dependency edges in the graph.
+    ///
+    /// Note that this is from a specific instance in the graph
+    /// ([`RegistrationId`]) to a more general plugin type. This reflects
+    /// the way dependencies can only specify their needs with an approval
+    /// function, rather than demanding a specific instance.
     pub(crate) fn insert_edge(&mut self, from: RegistrationId, to: PluginTypeId) {
         self.dependency_edges.entry(from).or_default().push(to);
     }
 }
 
+/// Errors that can occur during the process of choosing what plugins or
+/// resource to use for a
 #[derive(Debug)]
 pub enum PluginResolutionError {
     NoResourceCandidate(Vec<(ResourceTypeId, &'static str)>),
@@ -378,17 +458,22 @@ pub enum PluginResolutionError {
 
 #[derive(Debug)]
 pub enum ItemGraphError {
+    ///
     FailedBuildCheck,
 }
 
-/// A graph where we've already decided on specific plugin outputs to use per plugin type.
+/// A graph representing the post-plugin-choice stage of the solving process.
+///
+/// What remains to be done is choosing which resources to choose from the
+/// remaining instances and then ordering the items for registration.
 #[derive(Debug)]
-pub(crate) struct ItemsGraph {
-    sources: HashMap<PluginTypeId, PluginNode>,
+pub(crate) struct DependenciesSolvedGraph {
+    sources: HashMap<PluginTypeId, PluginInstance>,
     accepted_resource_sources: HashMap<ResourceTypeId, PluginTypeId>,
 }
 
-impl ItemsGraph {
+impl DependenciesSolvedGraph {
+    /// Try to construct a [`DependenciesSolvedGraph`].
     pub(crate) fn new(
         mut graph: PluginRegistrationGraph,
     ) -> Result<Self, (ItemGraphError, PluginRegistrationGraph)> {
@@ -406,16 +491,21 @@ impl ItemsGraph {
         }
     }
 
-    pub(crate) fn nodes_mut(&mut self) -> impl Iterator<Item = &mut PluginNode> {
+    /// Mutably iterate over the instances of plugins in this graph.
+    pub(crate) fn instances_mut(&mut self) -> impl Iterator<Item = &mut PluginInstance> {
         self.sources.values_mut()
     }
 
-    pub(crate) fn build(&mut self) -> Result<OrderedPluginItems, PluginResolutionError> {
+    /// Try to get an ordered list of bevy items to register. Only fails if
+    /// the resources selection can't be computed.
+    pub(crate) fn try_finalize(&mut self) -> Result<OrderedPluginItems, PluginResolutionError> {
         self.compute_resources()?;
         Ok(self.final_items_order())
     }
 
-    /// Establish candidates for which resources to use.
+    /// Establish candidates for which resources to use. Uses similar approval
+    /// and selection heuristics to plugin selection, but as resources are more
+    /// simple than plugins we have less to worry about.
     pub(crate) fn compute_resources(&mut self) -> Result<(), PluginResolutionError> {
         self.accepted_resource_sources.drain();
         let mut conflicting_sources: HashMap<
@@ -465,7 +555,7 @@ impl ItemsGraph {
                                 })
                             // If this staged resource doesn't have an erased resource
                             // we can't establish it as a candidate anyway.
-                            && let Some(erased) = staged_resource.erased()
+                            && let Some(erased) = staged_resource.get_erased()
                             && approval.approves(erased)
                         {
                             // We can keep this as the following has been met:
@@ -525,8 +615,8 @@ impl ItemsGraph {
         // For messages, we build out a hashmap of values to reduce noisy
         // duplication of message registration if messages are
         let mut messages = HashMap::new();
-        self.nodes_mut().for_each(|node| {
-            node.output.copy_messages_to_hashmap(&mut messages);
+        self.instances_mut().for_each(|node| {
+            node.output.extract_messages_to_hashmap(&mut messages);
         });
         buffer.extend(
             messages
@@ -534,18 +624,18 @@ impl ItemsGraph {
                 .map(|(_, message)| DeclrItem::Message(message)),
         );
         // The rest are kinda normal.
-        self.nodes_mut().for_each(|node| {
+        self.instances_mut().for_each(|node| {
             node.output.extract_schedules_into_buffer(&mut buffer);
         });
-        self.nodes_mut().for_each(|node| {
+        self.instances_mut().for_each(|node| {
             node.output.extract_observers_into_buffer(&mut buffer);
         });
-        self.nodes_mut().for_each(|node| {
+        self.instances_mut().for_each(|node| {
             node.output.extract_systems_into_buffer(&mut buffer);
         });
         let mut map = HashMap::new();
         std::mem::swap(&mut map, &mut self.accepted_resource_sources);
-        self.nodes_mut().for_each(|node| {
+        self.instances_mut().for_each(|node| {
             node.output.extract_resources_into_buffer(&mut buffer, &map);
         });
         // Swap back in case we use this in debugging / analysis.
@@ -583,7 +673,7 @@ impl DeclrItem {
                 (message_registration.registration_func)(app);
             }
             DeclrItem::System(staged_system) => {
-                staged_system.staging.apply_to_world(app.world_mut());
+                staged_system.staged.apply_to_world(app.world_mut());
             }
             DeclrItem::ScheduleLabel(staged_schedule_label) => {
                 staged_schedule_label.staged.apply_to_world(app.world_mut());

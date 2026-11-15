@@ -1,10 +1,9 @@
 use std::boxed::Box;
 
-/// A function that, given a type (and a context), returns a boolean.
+/// A function of `&T -> bool`, with an "always true" default.
 ///
-/// Defined and used here in the context of solving the dependency graph by
-/// "asking" each dependency if a given resource or plugin config is appropriate
-/// for its needs.
+/// This exists to account for Plugin and Resource "approval" processes to
+/// choose between conflicting configurations of a type.
 ///
 /// Most plugins shouldn't be picky, all they require is the _presence_ of a
 /// resource or other plugin. But some might have tighter, runtime-known constraints.
