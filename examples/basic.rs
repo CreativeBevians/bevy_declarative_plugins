@@ -13,7 +13,7 @@ use bevy_ecs::hierarchy::Children;
 fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
-    app.add_plugins_declarative(MyApp).unwrap();
+    let mut app = app.add_plugins_declarative(MyApp).unwrap();
     app.run();
 }
 

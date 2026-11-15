@@ -1,6 +1,15 @@
 #![warn(missing_docs)]
 //! A reference implementation for a bevy plugin system that supports
 //! dependencies.
+//!
+//! The primary change you need to make to integrate this library into your
+//! existing bevy code is to implement [`DeclarativePlugin`] rather than
+//! [`Plugin`] for your plugin types, then call
+//! [`DeclrAppExt::add_plugins_declarative`] to register your plugins.
+//!
+//! This project aims to be upstreamed by Bevy, largely because without
+//! compatibility with the broader ecosystem it serves as an internal
+//! dependencies tool instead of an enabler of better tooling.
 use core::any::Any;
 pub(crate) mod approval;
 pub(crate) mod erased;
@@ -12,6 +21,7 @@ use crate::entry_points::EntryPoints;
 use crate::graph::ItemGraphError;
 pub use crate::graph::PluginListExpansionError;
 use crate::graph::PluginResolutionError;
+use bevy_app::AppExit;
 #[allow(unused_imports)]
 use bevy_app::{App, Plugin};
 // Need to re-export this for error types.
@@ -73,18 +83,42 @@ pub trait DeclarativePlugin: Any {
 /// or equivalent tooling.
 pub struct EditorTooling;
 
+/// A "finalized" app, used here to softly deter calling
+/// [`DeclrAppExt::add_plugins_declarative`] more than once.
+#[derive(Debug)]
+pub struct FinalizedApp(App);
+
+impl FinalizedApp {
+    /// Run the underlying app.
+    pub fn run(&mut self) -> AppExit {
+        self.0.run()
+    }
+
+    /// Get the [`App`] back. This is marked unsafe as an app that has already
+    /// had declarative plugins applied to it will run into undefined behavior
+    /// if
+    ///
+    /// SAFETY: Do not run [`DeclrAppExt::add_plugins_declarative`] a second
+    /// time after calling this function, there will be undefined behavior.
+    /// If you need to add more plugins at the entry point site, nest tuples
+    /// (i.e. `((A, B, C), (D, E, F))`) instead or move things to dependencies
+    /// of plugins you own.
+    pub unsafe fn extract_app(self) -> App {
+        self.0
+    }
+}
+
 /// Extension trait for [`App`].
 pub trait DeclrAppExt {
     /// Add a declarative set of plugins to the app, solving for dependencies
     /// etc.
     ///
-    /// NOTE: This should only be called once, we don't account for multiple
-    /// calls to the solver.
+    /// NOTE: This should only be called once per instance of [`App`].
     #[must_use]
     fn add_plugins_declarative(
-        &mut self,
+        self,
         entry_point_list: impl EntryPoints,
-    ) -> Result<(), DeclarativePluginError>;
+    ) -> Result<FinalizedApp, DeclarativePluginError>;
 }
 
 /// Errors that can occur during declarative plugin registration.
@@ -100,9 +134,9 @@ pub enum DeclarativePluginError {
 
 impl DeclrAppExt for App {
     fn add_plugins_declarative(
-        &mut self,
+        mut self,
         entry_point_list: impl EntryPoints,
-    ) -> Result<(), DeclarativePluginError> {
+    ) -> Result<FinalizedApp, DeclarativePluginError> {
         let graph = entry_point_list
             .get_output()
             .expand()
@@ -113,8 +147,8 @@ impl DeclrAppExt for App {
         let final_order = graph
             .try_finalize()
             .map_err(DeclarativePluginError::ResolutionError)?;
-        final_order.apply_to_app(self);
-        Ok(())
+        final_order.apply_to_app(&mut self);
+        Ok(FinalizedApp(self))
     }
 }
 
@@ -510,9 +544,10 @@ mod test {
 
     #[test]
     fn labels() {
-        let mut app = App::new();
+        let app = App::new();
         let result = app.add_plugins_declarative(LabelsPlugin);
         assert_matches!(result, Ok(_));
+        let mut app = result.unwrap().0;
         app.world_mut().run_schedule(MyLabelB);
         app.world_mut().flush();
         let result = app.world_mut().get_resource_or_init::<LabelTestResource>();
@@ -547,9 +582,10 @@ mod test {
 
     #[test]
     fn observers() {
-        let mut app = App::new();
+        let app = App::new();
         let result = app.add_plugins_declarative(ObserverPluginA);
         assert_matches!(result, Ok(_));
+        let mut app = result.unwrap().0;
         app.world_mut().run_schedule(Startup);
         app.world_mut().flush();
         let result = app.world_mut().get_resource_or_init::<LabelTestResource>();
