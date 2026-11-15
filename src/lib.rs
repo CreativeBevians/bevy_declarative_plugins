@@ -7,9 +7,55 @@
 //! [`Plugin`] for your plugin types, then call
 //! [`DeclrAppExt::add_plugins_declarative`] to register your plugins.
 //!
+//! i.e. If you have the following plugin implementation of a plugin:
+//!
+//! ```ignore
+//! pub struct InputManager;
+//!
+//! impl Plugin for InputManager {
+//!     fn build(&self, app: &mut App) {
+//!         app.add_systems(PreUpdate, my_input_handler);
+//!     }
+//! }
+//!
+//! fn my_input_handler(world: &mut World) {...}
+//!
+//! fn main() {
+//!     let mut app = App::new();
+//!     app.add_plugins(InputManager).run();
+//! }
+//! ```
+//!
+//! This should be rewritten as the following for a declarative plugin:
+//!
+//! ```ignore
+//! pub struct InputManager;
+//!
+//! impl DeclarativePlugin for InputManager {
+//!     fn build(&self, output: &mut PluginOutput) {
+//!         output.add_systems(PreUpdate, my_input_handler);
+//!     }
+//! }
+//!
+//! fn my_input_handler(world: &mut World) {...}
+//!
+//! fn main() {
+//!     let mut app = App::new();
+//!     app.add_plugins_declarative(InputManager).unwrap().run();
+//! }
+//! ```
+//!
+//! Relatively simple change. Most of the item-registration API is the same,
+//! with the exception of Schedules and States. See
+//! [`PluginOutput::add_schedule`] and [`PluginOutput::init_state`] for details
+//! there.
+//!
 //! This project aims to be upstreamed by Bevy, largely because without
 //! compatibility with the broader ecosystem it serves as an internal
-//! dependencies tool instead of an enabler of better tooling.
+//! dependencies tool instead of an enabler of better tooling. If you want to
+//! develop a 3rd party crate with "deep" dependencies, reach out to the crates
+//! you want to depend on to put support for declarative plugins under a
+//! feature flag.
 use core::any::Any;
 pub(crate) mod approval;
 pub(crate) mod erased;

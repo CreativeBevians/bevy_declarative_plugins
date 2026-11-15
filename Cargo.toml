@@ -9,7 +9,6 @@ keywords = ["bevy", "plugin", "declarative", "gamedev"]
 categories = ["game-development"]
 readme = "README.md"
 repository = "https://github.com/CreativeBevians/bevy_declarative_plugins"
-homepage = "https://github.com/CreativeBevians/bevy_declarative_plugins"
 
 [features]
 default = ["state"]
