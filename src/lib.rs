@@ -160,7 +160,9 @@
 //! [`RenderApp`] or engine tooling, and this rigidity does not allow that
 //! case.
 //!
-//! An alternative to this could be that each plugin stores some kind
+//! An alternative to this could be that each plugin stores some kind list of
+//! dyn compatible "`PluginContext`" type with the ability to register
+//! post-solve hooks to determine what to do. This a minor detail, though.
 //!
 //! # Future work
 //!
