@@ -107,8 +107,8 @@ impl MetadataPtr {
     }
 }
 
-/// Drop implementation that runs the erased value's drop function.
 impl Drop for MetadataPtr {
+    /// Drop implementation that runs the erased value's drop function.
     fn drop(&mut self) {
         if !self.already_dropped {
             (self.drop_fn)(self.ptr, self.layout);

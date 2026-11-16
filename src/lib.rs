@@ -7,7 +7,7 @@
 //! [`Plugin`] for your plugin types, then call
 //! [`DeclrAppExt::add_plugins_declarative`] to register your plugins.
 //!
-//! i.e. If you have the following plugin implementation of a plugin:
+//! I.e. If you have the following plugin implementation of a plugin:
 //!
 //! ```ignore
 //! pub struct InputManager;
@@ -50,12 +50,139 @@
 //! [`PluginOutput::add_schedule`] and [`PluginOutput::init_state`] for details
 //! there.
 //!
+//! # Dependencies
+//!
+//! Currently in Bevy, if you want to add another plugin while in
+//! [`Plugin::build`] you need to be certain this is the only spot that extra
+//! plugin is being added. If it's added a second time, the program crashes,
+//! but even if it didn't crash and you were adding a plugin with fields
+//! then your configuration could be overwritten by a later registration. Or, a
+//! plugin being registered twice means that all its items are registered twice
+//! too.
+//!
+//! This implementation aims to look as similar to the previous way of doing
+//! plugins as possible. To that end, adding a dependency looks like the
+//! following:
+//!
+//! ```ignore
+//! use bevy_3rd_party_crate::3rdPartyDeclarativePlugin;
+//!
+//! pub struct MyPlugin;
+//!
+//! impl DeclarativePlugin for MyPlugin {
+//!     fn build(&self, output: &PluginOutput) {
+//!         output.add_plugins(3rdPartyDeclarativePlugin);
+//!     }
+//! }
+//! ```
+//!
+//! ## Approvals
+//!
+//! Some level of control over which instance of a plugin is used is passed
+//! onto the solver. This is necessary to "solve" which instance of a plugin
+//! to use when a plugin is not a zero-sized type (even if in practice most
+//! plugins are ZSTs).
+//!
+//! In the case where plugin configuration is critical, you can specify what
+//! you _need_ as a plugin / app author like so:
+//!
+//! ```ignore
+//! output.add_plugins(
+//!     // Non-zero-sized-type plugin with config we care about.
+//!     PhysicsEnginePlugin::with_solver(Solver::Xpbd)
+//!         // This plugin only approves of other instances of the physics engine
+//!         // plugin if the correct solver is being used.
+//!         .with_approval(|engine| engine.solver == Solver::Xpbd)
+//! );
+//! ```
+//!
+//! Because not all plugins are zero-sized types, multiple plugins can register
+//! conflicting configurations of the same plugin. We need a way for plugin
+//! authors and game developers to specify what constraints they need to put on
+//! the configuration of a plugin (if any).
+//!
+//! "Approval" functions is this framework's way of doing this. These are
+//! `Fn(&T) -> bool` functions that decide if the plugin that requires a
+//! dependency "approves" of the configuration from another source.
+//!
+//! This serves a similar purpose to how we introduce version requirements to
+//! dependencies in `Cargo.toml` files, like `bevy = "0.20` being a function
+//! for choosing which bevy version to use: should match 0.20, patch versions
+//! don't matter. We can translate this to the way we do things here as:
+//!
+//! ```ignore
+//! // How `Cargo.toml` treats `bevy = "0.20"` in its constraint solving.
+//! // Illustrative of why we use approval functions to fit constraints in
+//! |bevy_crate| bevy_crate.version.major == 0 && bevy_crate.version.minor == 20;
+//!
+//! // A more constrained `bevy = "=0.15.0"`
+//! |bevy_crate| bevy_crate.version.major == 0
+//!     && bevy_crate.version.minor == 15
+//!     && bevy_crate.version.patch == 0;
+//! ```
+//!
+//! # Supported Items
+//!
+//! "Items" are the pieces of functionality and data we want to introduce to a
+//! Bevy `World`. The currently supported items are:
+//!
+//! - Systems
+//! - Resources
+//!     - Resources, like plugins, can be registered by multiple sources and
+//!       need to be "solved" in a similar way.
+//! - Schedule Labels
+//!     - These are slightly different than usual! Using [`BeforeOrAfter`] to
+//!       specify where these labels should be placed in the schedule graph.
+//!       See [`PluginOutput::add_schedule_label`] for details.
+//! - States (under the `state` flag, using resources)
+//! - Messages
+//! - Observers
+//! - Dependencies on other Declarative Plugins
+//!
+//! This project has largely been developed while reflecting on my own use of
+//! Bevy and the way my project has sprawled over time. I'm eager to hear the
+//! requirements and constraints of other users and plugin authors of the Bevy
+//! engine and how they aren't met by this design yet.
+//!
+//! # `RenderApp` and Editor tooling
+//!
+//! [`DeclarativePlugin`] has two methods that are marked deprecated that
+//! represent a possible way to expose both the `RenderApp` and future editor
+//! extension APIs.
+//!
+//! For [`RenderApp`] / Render world, we expose a [`PluginOutput<()>`] that
+//! cannot register dependencies. This communicates that the render world is
+//! a secondary concern for the
+//!
+//! The main issue with exposing these endpoints as trait methods is that they
+//! are not _extensible_. One can imagine something built atop bevy that needs
+//! access to information during or after solving time that is neither about
+//! [`RenderApp`] or engine tooling, and this rigidity does not allow that
+//! case.
+//!
+//! An alternative to this could be that each plugin stores some kind
+//!
+//! # Future work
+//!
+//! Having a space between "Items registered" and "Items added to world" lets
+//! us do things like:
+//!
+//! - Choose to be a language server for the scene format.
+//! - Expose information to tooling.
+//! - Intercept hot-patching signals and modify the running world based on
+//!   what has changed, allowing new systems, observers, plugins, messages etc.
+//!   to be introduced or modified at runtime.
+//!
+//! None of this is currently implemented, but the infrastructure here makes
+//! this kind of thing possible.
+//!
+//! # Upstreaming
+//!
 //! This project aims to be upstreamed by Bevy, largely because without
 //! compatibility with the broader ecosystem it serves as an internal
-//! dependencies tool instead of an enabler of better tooling. If you want to
-//! develop a 3rd party crate with "deep" dependencies, reach out to the crates
-//! you want to depend on to put support for declarative plugins under a
-//! feature flag.
+//! dependencies tool instead of an enabler of better ecosystem tooling.
+//! If you want to develop a 3rd party crate with "deep" dependencies, reach
+//! out to crate authors to put support under a flag.
 use core::any::Any;
 pub(crate) mod approval;
 pub(crate) mod erased;
@@ -129,7 +256,7 @@ pub trait DeclarativePlugin: Any {
 /// or equivalent tooling.
 pub struct EditorTooling;
 
-/// A "finalized" app, used here to softly deter calling
+/// A "finalized" app, used here to deter calling
 /// [`DeclrAppExt::add_plugins_declarative`] more than once.
 #[derive(Debug)]
 pub struct FinalizedApp(App);
@@ -142,13 +269,13 @@ impl FinalizedApp {
 
     /// Get the [`App`] back. This is marked unsafe as an app that has already
     /// had declarative plugins applied to it will run into undefined behavior
-    /// if
+    /// if the [`DeclrAppExt::add_plugins_declarative`] is called a second
+    /// time. If you need to add more plugins at the entry point site, either
+    /// nest tuples (i.e. `((A, B, C), (D, E, F))`) or move things to
+    /// dependencies of plugins you manage.
     ///
     /// SAFETY: Do not run [`DeclrAppExt::add_plugins_declarative`] a second
-    /// time after calling this function, there will be undefined behavior.
-    /// If you need to add more plugins at the entry point site, nest tuples
-    /// (i.e. `((A, B, C), (D, E, F))`) instead or move things to dependencies
-    /// of plugins you own.
+    /// time after calling this function.
     pub unsafe fn extract_app(self) -> App {
         self.0
     }

@@ -6,7 +6,9 @@ use std::boxed::Box;
 /// choose between conflicting configurations of a type.
 ///
 /// Most plugins shouldn't be picky, all they require is the _presence_ of a
-/// resource or other plugin. But some might have tighter, runtime-known constraints.
+/// resource or other plugin. We can imagine how a game developer might have
+/// tighter, runtime-known constraints on a 3rd party crate than a plugin
+/// author or engine developer.
 ///
 /// Approval functions are expected to, mostly, return true and neither contain
 /// nor take take advantage of mutable state. Memoization rights reserved.

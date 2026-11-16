@@ -231,7 +231,7 @@ impl<D> PluginOutput<D> {
 
     /// Add a schedule label, relative to a different schedule label. This uses
     /// types rather than separate functions.
-    pub fn add_schedule<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+    pub fn add_schedule_label<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
         &mut self,
         label: S,
         relative_to: BeforeOrAfter<O>,

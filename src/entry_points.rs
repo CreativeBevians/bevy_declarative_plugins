@@ -64,7 +64,7 @@ pub trait AddDependency: Sized {
     /// Add `self` to the [`PluginOutput`] of a plugin.
     fn add_to_output(self, output: &mut PluginOutput<PluginDependencies>);
 
-    /// Create a version of this dependency with  
+    /// Create a version of this dependency with an approval function.
     fn with_approval(
         self,
         f: impl for<'a> Fn(&'a Self::Plugin) -> bool + 'static,
@@ -140,6 +140,35 @@ where
 
     fn get_value(self) -> Option<Self::Plugin> {
         self.plugin.get_value()
+    }
+
+    /// Calling `with_approval` on a [`WithApproval`] type will AND the two
+    /// approval functions, "nested" [`WithApproval`] instances will have their
+    /// functions replaced with panicking approval functions as only the
+    /// topmost approval should be used.
+    fn with_approval(
+        self,
+        f: impl for<'a> Fn(&'a Self::Plugin) -> bool + 'static,
+    ) -> WithApproval<Self>
+    where
+        Self: 'static,
+    {
+        let WithApproval {
+            plugin,
+            approval: prev_approval,
+        } = self;
+
+        WithApproval {
+            plugin: WithApproval {
+                plugin,
+                // We avoid using the inner one, because we instead AND the
+                // previous approval with the new approval.
+                approval: Box::new(|_value: &A::Plugin| {
+                    panic!("Should not use inner approval function")
+                }),
+            },
+            approval: Box::new(move |value: &A::Plugin| f(value) && prev_approval(value)),
+        }
     }
 }
 
