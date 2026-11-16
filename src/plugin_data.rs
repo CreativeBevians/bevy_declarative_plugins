@@ -28,13 +28,18 @@ use crate::{
 /// A list of plugin dependencies for a particular [`PluginOutput`].
 pub struct PluginDependencies(pub(crate) Vec<PluginDependency>);
 
-/// Plugin output, opaque to end user.
+/// Plugin output struct, stores Bevy items to be evaluated and solved.
 ///
 /// This is designed to be a plugin data structure that end users don't need to
 /// think about in terms of what it's "made of." Just something that stuff can be
 /// added to.
 ///
-/// TODO: docs that are user-facing, not reviewer-facing.
+/// Dependencies are a type parameter so we can work with [`PluginOutput`]
+/// values that do not have dependencies, or have different shaped
+/// dependencies. This is helpful for separating out solving of dependencies
+/// from storage of plugin items, and for having other plugin registration
+/// methods be able to register non-dependency items (such as items for
+/// the Render app).
 pub struct PluginOutput<D = PluginDependencies> {
     /// The plugin was added to an app, or part of a declarative bundle, rather
     /// than being inserted as a dependency.
@@ -50,7 +55,7 @@ pub struct PluginOutput<D = PluginDependencies> {
     /// Observers registered by this plugin.
     pub(crate) observers: Vec<Observer>,
     /// The schedule graph for this plugin (to be merged with others later)
-    pub(crate) schedules: MergeableSchedule,
+    pub(crate) schedules: StagedSchedules,
     pub(crate) schedule_labels: Vec<StagedScheduleLabel>,
     /// Message storage
     pub(crate) messages: HashMap<TypeId, MessageRegistration>,
@@ -63,6 +68,8 @@ pub struct PluginOutput<D = PluginDependencies> {
 }
 
 impl<D> PluginOutput<D> {
+    /// Extract the dependencies and get a dependencies-erased [`PluginOutput`]
+    /// for storing and solving.
     pub(crate) fn extract_dependencies(self) -> (PluginOutput<()>, D) {
         let Self {
             is_entry_point,
@@ -128,15 +135,11 @@ impl<D> PluginOutput<D> {
         }
     }
 
-    pub(crate) fn copy_messages_to_hashmap(
-        &self,
+    pub(crate) fn extract_messages_to_hashmap(
+        &mut self,
         messages: &mut HashMap<TypeId, MessageRegistration>,
     ) {
-        messages.extend(
-            self.messages
-                .iter()
-                .map(|(type_id, registration)| (*type_id, *registration)),
-        );
+        messages.extend(self.messages.drain());
     }
 
     pub(crate) fn extract_observers_into_buffer(&mut self, buffer: &mut Vec<DeclrItem>) {
@@ -152,9 +155,9 @@ impl<D> PluginOutput<D> {
     }
 }
 
-impl PluginOutput {
+impl<D> PluginOutput<D> {
     /// Create a plugin output structure for a given plugin type.
-    pub(crate) fn new<P: DeclarativePlugin + 'static>() -> Self {
+    pub(crate) fn new<P: DeclarativePlugin + 'static>(dependencies: D) -> Self {
         Self {
             // This is set by App bookkeeping.
             is_entry_point: false,
@@ -162,17 +165,19 @@ impl PluginOutput {
             working_plugin: PluginTypeId::of::<P>(),
             plugin_name: type_name::<P>(),
             observers: Vec::new(),
-            schedules: MergeableSchedule {
+            schedules: StagedSchedules {
                 schedules: Vec::new(),
             },
             messages: HashMap::new(),
             resource_staging: HashMap::new(),
-            dependencies: PluginDependencies(Vec::new()),
+            dependencies,
             plugin_approval: HashMap::new(),
             schedule_labels: Vec::new(),
         }
     }
 
+    /// Initialize the value for a state. Uses resources, rather than a state
+    /// specific mechanism.
     #[cfg(feature = "state")]
     pub fn init_state<T: States + Default>(&mut self) {
         use bevy_state::state::State;
@@ -181,6 +186,8 @@ impl PluginOutput {
             .build();
     }
 
+    /// Add a system, or set of systems, to a schedule label. Identical to
+    /// [`App::add_systems`].
     pub fn add_systems<M: 'static>(
         &mut self,
         schedule: impl ScheduleLabel + 'static,
@@ -190,20 +197,81 @@ impl PluginOutput {
         self
     }
 
+    /// Add a global observer to the world. Mostly identical to
+    /// [`App::add_observer`].
     pub fn add_observer<M>(&mut self, observer: impl IntoObserver<M>) -> &mut Self {
         self.observers.push(observer.into_observer());
         self
     }
 
+    /// Add a message type to the world. Identical to [`App::add_message`].
     pub fn add_message<M: Message + 'static>(&mut self) -> &mut Self {
         self.messages
             .insert(TypeId::of::<M>(), MessageRegistration::new::<M>());
         self
     }
 
-    /// Alias for [`Self::add_dependencies`].
-    pub fn add_plugins<P: AddDependency>(&mut self, dependencies: P) -> &mut Self {
-        self.add_dependencies(dependencies)
+    /// Open a resource builder for a given resource type.
+    #[must_use]
+    pub fn resource_builder<'a, R: Resource>(&'a mut self) -> ResourceBuilder<'a, R, Self> {
+        ResourceBuilder {
+            resource: None,
+            approval: None,
+            output: self,
+            is_default: true,
+        }
+    }
+
+    /// Insert a resource. Not identical to [`App::insert_resource`] as we
+    /// "solve" resources like we do with plugins, but if you're the only
+    /// plugin registering this resource type it'll be largely identical.
+    pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
+        self.resource_builder().with_data(resource).build()
+    }
+
+    /// Add a schedule label, relative to a different schedule label. This uses
+    /// types rather than separate functions.
+    pub fn add_schedule_label<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+        &mut self,
+        label: S,
+        relative_to: BeforeOrAfter<O>,
+    ) {
+        self.schedule_labels
+            .push(StagedScheduleLabel::new(label, relative_to).unwrap());
+    }
+
+    /// Add a schedule label and order it before another.
+    pub fn add_schedule_before<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+        &mut self,
+        label: S,
+        before: O,
+    ) {
+        self.schedule_labels
+            .push(StagedScheduleLabel::new(label, BeforeOrAfter::Before(before)).unwrap());
+    }
+
+    /// Add a schedule label and order it after another.
+    pub fn add_schedule_after<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
+        &mut self,
+        label: S,
+        after: O,
+    ) {
+        self.schedule_labels
+            .push(StagedScheduleLabel::new(label, BeforeOrAfter::After(after)).unwrap());
+    }
+}
+
+impl PluginOutput<PluginDependencies> {
+    /// Open up a dependency builder for a given plugin type. Prefer
+    /// [`Self::add_dependencies`] or its alias [`Self::add_plugins`], which
+    /// are closer to the current upstream bevy plugin API.
+    #[must_use]
+    pub fn dependency_builder<'a, P>(&'a mut self) -> DependencyBuilder<'a, P> {
+        DependencyBuilder {
+            config: None,
+            approval: None,
+            output: self,
+        }
     }
 
     /// Depend on plugins. The configuration you pass here may not necessarily
@@ -215,66 +283,25 @@ impl PluginOutput {
         self
     }
 
-    #[must_use]
-    pub fn resource_builder<'a, R: Resource>(&'a mut self) -> ResourceBuilder<'a, R> {
-        ResourceBuilder {
-            resource: None,
-            approval: None,
-            output: self,
-            is_default: true,
-        }
-    }
-
-    pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
-        self.resource_builder().with_data(resource).build()
-    }
-
-    #[must_use]
-    pub fn dependency_builder<'a, P>(&'a mut self) -> DependencyBuilder<'a, P> {
-        DependencyBuilder {
-            config: None,
-            approval: None,
-            output: self,
-        }
-    }
-
-    pub fn add_schedule<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
-        &mut self,
-        label: S,
-        relative_to: BeforeOrAfter<O>,
-    ) {
-        self.schedule_labels
-            .push(StagedScheduleLabel::new(label, relative_to).unwrap());
-    }
-
-    pub fn add_schedule_before<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
-        &mut self,
-        label: S,
-        before: O,
-    ) {
-        self.schedule_labels
-            .push(StagedScheduleLabel::new(label, BeforeOrAfter::Before(before)).unwrap());
-    }
-
-    pub fn add_schedule_after<S: ScheduleLabel + 'static, O: ScheduleLabel + 'static>(
-        &mut self,
-        label: S,
-        after: O,
-    ) {
-        self.schedule_labels
-            .push(StagedScheduleLabel::new(label, BeforeOrAfter::After(after)).unwrap());
+    /// Alias for [`Self::add_dependencies`].
+    pub fn add_plugins<P: AddDependency>(&mut self, dependencies: P) -> &mut Self {
+        self.add_dependencies(dependencies)
     }
 }
 
-pub struct ResourceBuilder<'a, R> {
+/// A resource builder struct. [`ResourceBuilder::build`] must be called to
+/// finish the registration of a resource built this way.
+pub struct ResourceBuilder<'a, R, O> {
     resource: Option<R>,
     approval: Option<Approval<ErasedResource>>,
-    output: &'a mut PluginOutput,
+    output: &'a mut O,
     is_default: bool,
 }
 
-impl<'a, R> ResourceBuilder<'a, R> {
-    pub fn build(self) -> &'a mut PluginOutput
+impl<'a, R, D> ResourceBuilder<'a, R, PluginOutput<D>> {
+    /// Finalize the resource registration, adding it to the plugin output
+    /// and returning that output.
+    pub fn build(self) -> &'a mut PluginOutput<D>
     where
         R: Resource,
     {
@@ -296,16 +323,18 @@ impl<'a, R> ResourceBuilder<'a, R> {
         output
     }
 
+    /// Provide a configuration for the resource.
     #[must_use]
     pub fn with_data(self, resource: R) -> Self where {
         ResourceBuilder {
             resource: Some(resource),
-            approval: None,
-            output: self.output,
             is_default: false,
+            ..self
         }
     }
 
+    /// Use the default value of the resource, and mark the resource as a
+    /// default instance.
     #[must_use]
     pub fn with_default(mut self) -> Self
     where
@@ -316,6 +345,8 @@ impl<'a, R> ResourceBuilder<'a, R> {
         self
     }
 
+    /// Set the approval function for what this plugin wants from a resource
+    /// of this type.
     #[must_use]
     pub fn with_approval<F: Fn(&R) -> bool + 'static>(mut self, f: F) -> Self
     where
@@ -331,6 +362,10 @@ impl<'a, R> ResourceBuilder<'a, R> {
     }
 }
 
+/// A dependency builder struct. [`DependencyBuilder::build`] must be called to
+/// finish the registration of a plugin dependency built this way.
+///
+/// Prefer to use [`PluginOutput::add_plugins`].
 pub struct DependencyBuilder<'a, P> {
     config: Option<P>,
     approval: Option<Approval<Box<dyn DeclarativePlugin>>>,
@@ -338,6 +373,8 @@ pub struct DependencyBuilder<'a, P> {
 }
 
 impl<'a, P> DependencyBuilder<'a, P> {
+    /// Finalize the dependency registration, adding it to the plugin output
+    /// and returning that output.
     pub fn build(self) -> &'a mut PluginOutput
     where
         P: DeclarativePlugin,
@@ -361,6 +398,7 @@ impl<'a, P> DependencyBuilder<'a, P> {
         output
     }
 
+    /// Provide a configuration for the plugin dependency.
     #[must_use]
     pub fn with_config(mut self, config: P) -> Self
     where
@@ -370,6 +408,8 @@ impl<'a, P> DependencyBuilder<'a, P> {
         self
     }
 
+    /// Set the approval function for what this plugin wants from a dependency
+    /// of this type.
     #[must_use]
     pub fn with_approval<F: for<'b> Fn(&'b P) -> bool + 'static>(mut self, approval: F) -> Self
     where
@@ -405,7 +445,7 @@ impl PluginDependency {
             fn(&dyn DeclarativePlugin) -> Option<PluginOutput>,
         )> = Some((Box::new(plugin), |plugin: &dyn DeclarativePlugin| {
             <dyn Any>::downcast_ref::<P>(plugin).map(|plugin| {
-                let mut output = PluginOutput::new::<P>();
+                let mut output = PluginOutput::new::<P>(PluginDependencies(Vec::new()));
                 plugin.build(&mut output);
                 output
             })
@@ -424,6 +464,7 @@ impl PluginDependency {
     }
 }
 
+/// A [`TypeId`] of a known type that implements [`DeclarativePlugin`].
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct PluginTypeId(TypeId);
 
@@ -447,13 +488,11 @@ impl MessageRegistration {
     }
 }
 
-pub(crate) struct MergeableSchedule {
-    // This isn't ideal, as it does put the 'static requirements on systems,
-    // but it will do for now.
+pub(crate) struct StagedSchedules {
     pub(crate) schedules: Vec<StagedSystem>,
 }
 
-impl MergeableSchedule {
+impl StagedSchedules {
     pub(crate) fn add_systems<M>(
         &mut self,
         schedule: impl ScheduleLabel + 'static,

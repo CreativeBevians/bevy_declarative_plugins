@@ -10,7 +10,7 @@ use bevy_declarative_plugins::{DeclarativePlugin, DeclrAppExt, PluginOutput};
 fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
-    app.add_plugins_declarative(MainPlugin).unwrap();
+    let mut app = app.add_plugins_declarative(MainPlugin).unwrap();
     app.run();
 }
 

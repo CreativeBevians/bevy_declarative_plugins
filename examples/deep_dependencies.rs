@@ -28,8 +28,9 @@ use bevy_declarative_plugins::DeclrAppExt;
 use crate::{a::A, b::B, c::C};
 
 fn main() {
-    let mut app = App::new();
-    app.add_plugins_declarative((A, B { num: 4 }, C { num: 42 }))
+    let app = App::new();
+    let mut app = app
+        .add_plugins_declarative((A, B { num: 4 }, C { num: 42 }))
         .unwrap();
     app.run();
 }

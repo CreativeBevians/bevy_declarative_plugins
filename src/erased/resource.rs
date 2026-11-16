@@ -4,27 +4,33 @@ use bevy_ecs::{resource::Resource, world::World};
 
 use crate::{approval::Approval, erased::schedule::Staged, metadata_ptr::MetadataPtr};
 
-/// A type erased [`Resource`], implemented using a [`MetadataPtr`]. This is
-/// necessary due to [`Resource`] not being dyn compatible.
+/// A type erased [`Resource`], implemented using a [`MetadataPtr`].
 pub(crate) struct ErasedResource(pub(crate) MetadataPtr);
 
+/// [`TypeId`] associated with a [`Resource`].
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct ResourceTypeId(pub(crate) TypeId);
 
 impl ResourceTypeId {
+    /// [`TypeId::of`] but for [`Resource`] types.
     pub(crate) fn of<R: Resource>() -> Self {
         Self(TypeId::of::<R>())
     }
 }
 
-/// Data structure to get around the fact that Resource is not dyn compatible.
+/// A [`Staged`] resource and additional metadata for use during solving which
+/// instance of a resource to pick.
 pub(crate) struct StagedResource {
+    /// Staged resource, an `Option` because a registered resource may not have
+    /// a value associated with it when a plugin assumes another .
     staged: Staged<Option<ErasedResource>>,
     type_id: ResourceTypeId,
-    /// Function that un-erases the resource and check if it meets the plugin's requirements.
+    /// [`Approval`] function for if the resource meets this plugin's needs.
     pub(crate) approval_from_plugin: Approval<ErasedResource>,
-    /// If the staged resource is a default, we care about it less than any given
+    /// If the staged resource is a default, we care about it less than a given
+    /// non-default instance of that resource.
     pub(crate) is_default: bool,
+    /// The type name of the resource, used for error reporting.
     pub(crate) resource_name: &'static str,
 }
 
@@ -39,29 +45,40 @@ impl StagedResource {
             is_default,
             resource_name: type_name::<R>(),
             staged: Staged {
-                erased: resource
-                    .and_then(|resource| Some(ErasedResource(MetadataPtr::new(resource)?))),
-                unerase_and_apply_to_world: |world, erased| {
-                    if let Some(erased) = erased {
-                        match erased.0.try_reverse_erase::<R>() {
-                            Ok(resource) => world.insert_resource(resource),
-                            Err(_) => {}
-                        }
-                    }
-                },
+                erased: resource.and_then(|resource| {
+                    Some(ErasedResource(
+                        MetadataPtr::new(resource).expect("Allocation failure."),
+                    ))
+                }),
+                unerase_and_apply_to_world: Self::reverse_erase_apply_to_world::<R>,
             },
             type_id: ResourceTypeId::of::<R>(),
         })
     }
 
+    fn reverse_erase_apply_to_world<R: Resource>(
+        world: &mut World,
+        erased: Option<ErasedResource>,
+    ) {
+        if let Some(erased) = erased {
+            match erased.0.try_reverse_erase::<R>() {
+                Ok(resource) => world.insert_resource(resource),
+                Err(_) => {}
+            }
+        }
+    }
+
+    /// Pass-through method for [`Staged::apply_to_world`].
     pub(crate) fn apply_to_world(self, world: &mut World) {
         self.staged.apply_to_world(world);
     }
 
-    pub(crate) fn erased(&self) -> Option<&ErasedResource> {
+    /// Get the erased resource as a reference.
+    pub(crate) fn get_erased(&self) -> Option<&ErasedResource> {
         self.staged.erased.as_ref()
     }
 
+    /// Get the erased resource's [`ResourceTypeId`].
     #[allow(unused)]
     pub(crate) fn erased_type_id(&self) -> ResourceTypeId {
         self.type_id

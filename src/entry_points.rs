@@ -1,20 +1,27 @@
+//! Traits and types for registering plugins as "entry points" or collections
+//! of dependencies.
+
 use std::marker::PhantomData;
 
-use crate::{DeclarativePlugin, PluginOutput, graph::PluginList};
+use crate::{DeclarativePlugin, PluginOutput, graph::PluginList, plugin_data::PluginDependencies};
 
+/// A trait for types that contain one or more Plugin.
 pub trait EntryPoints: Sized {
+    /// "Flatten" the plugins into a normalized list of plugins.
     fn get_output(self) -> PluginList {
         let mut list = PluginList { nodes: Vec::new() };
         self.add_to_list(&mut list);
         list
     }
 
+    /// Add the internal plugins to an existing list of plugins.
     fn add_to_list(self, list: &mut PluginList);
 }
 
+/// All plugins are, themselves, potential entry points.
 impl<A: DeclarativePlugin> EntryPoints for A {
     fn add_to_list(self, list: &mut PluginList) {
-        let mut output = PluginOutput::new::<A>();
+        let mut output = PluginOutput::new::<A>(PluginDependencies(Vec::new()));
         self.build(&mut output);
         list.nodes.push((Box::new(self), output));
     }
@@ -48,11 +55,16 @@ impl_entry_points!(a A, b B, c C, d D, e E, f F, g G, h H, i I, j J, k K, l L, m
 impl_entry_points!(a A, b B, c C, d D, e E, f F, g G, h H, i I, j J, k K, l L, m M, n N, o O);
 impl_entry_points!(a A, b B, c C, d D, e E, f F, g G, h H, i I, j J, k K, l L, m M, n N, o O, p P);
 
+/// A trait for types that can be added as dependencies.
 pub trait AddDependency: Sized {
+    /// The underlying plugin for the type, for groups of plugins this should
+    /// be the never type ([`!`])
     type Plugin;
 
-    fn add_to_output(self, output: &mut PluginOutput);
+    /// Add `self` to the [`PluginOutput`] of a plugin.
+    fn add_to_output(self, output: &mut PluginOutput<PluginDependencies>);
 
+    /// Create a version of this dependency with an approval function.
     fn with_approval(
         self,
         f: impl for<'a> Fn(&'a Self::Plugin) -> bool + 'static,
@@ -66,9 +78,13 @@ pub trait AddDependency: Sized {
         }
     }
 
+    /// Get the underlying plugin value, if it exists. Some dependency
+    /// representations will not have a real value associated with them, and
+    /// plugin groups will need to
     fn get_value(self) -> Option<Self::Plugin>;
 }
 
+/// All declarative plugins can be added as a dependency.
 impl<A: DeclarativePlugin> AddDependency for A {
     type Plugin = A;
 
@@ -81,6 +97,9 @@ impl<A: DeclarativePlugin> AddDependency for A {
     }
 }
 
+/// A [`PhantomData`] of a [`DeclarativePlugin`] represents a dependency
+/// without a configuration. This should maybe be replaced with a specific
+/// "`WithoutValue`" type in future, but this is what it is for now.
 impl<A: DeclarativePlugin> AddDependency for PhantomData<A> {
     type Plugin = A;
 
@@ -93,6 +112,9 @@ impl<A: DeclarativePlugin> AddDependency for PhantomData<A> {
     }
 }
 
+/// A plugin configuration paired with its approval function. The type
+/// parameter is trait-bound as the approval function depends on the
+/// plugin type.
 pub struct WithApproval<A: AddDependency> {
     plugin: A,
     approval: Box<dyn for<'a> Fn(&'a A::Plugin) -> bool + 'static>,
@@ -118,6 +140,35 @@ where
 
     fn get_value(self) -> Option<Self::Plugin> {
         self.plugin.get_value()
+    }
+
+    /// Calling `with_approval` on a [`WithApproval`] type will AND the two
+    /// approval functions, "nested" [`WithApproval`] instances will have their
+    /// functions replaced with panicking approval functions as only the
+    /// topmost approval should be used.
+    fn with_approval(
+        self,
+        f: impl for<'a> Fn(&'a Self::Plugin) -> bool + 'static,
+    ) -> WithApproval<Self>
+    where
+        Self: 'static,
+    {
+        let WithApproval {
+            plugin,
+            approval: prev_approval,
+        } = self;
+
+        WithApproval {
+            plugin: WithApproval {
+                plugin,
+                // We avoid using the inner one, because we instead AND the
+                // previous approval with the new approval.
+                approval: Box::new(|_value: &A::Plugin| {
+                    panic!("Should not use inner approval function")
+                }),
+            },
+            approval: Box::new(move |value: &A::Plugin| f(value) && prev_approval(value)),
+        }
     }
 }
 

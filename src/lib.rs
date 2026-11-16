@@ -1,5 +1,190 @@
+#![warn(missing_docs)]
 //! A reference implementation for a bevy plugin system that supports
 //! dependencies.
+//!
+//! The primary change you need to make to integrate this library into your
+//! existing bevy code is to implement [`DeclarativePlugin`] rather than
+//! [`Plugin`] for your plugin types, then call
+//! [`DeclrAppExt::add_plugins_declarative`] to register your plugins.
+//!
+//! I.e. If you have the following plugin implementation of a plugin:
+//!
+//! ```ignore
+//! pub struct InputManager;
+//!
+//! impl Plugin for InputManager {
+//!     fn build(&self, app: &mut App) {
+//!         app.add_systems(PreUpdate, my_input_handler);
+//!     }
+//! }
+//!
+//! fn my_input_handler(world: &mut World) {...}
+//!
+//! fn main() {
+//!     let mut app = App::new();
+//!     app.add_plugins(InputManager).run();
+//! }
+//! ```
+//!
+//! This should be rewritten as the following for a declarative plugin:
+//!
+//! ```ignore
+//! pub struct InputManager;
+//!
+//! impl DeclarativePlugin for InputManager {
+//!     fn build(&self, output: &mut PluginOutput) {
+//!         output.add_systems(PreUpdate, my_input_handler);
+//!     }
+//! }
+//!
+//! fn my_input_handler(world: &mut World) {...}
+//!
+//! fn main() {
+//!     let mut app = App::new();
+//!     app.add_plugins_declarative(InputManager).unwrap().run();
+//! }
+//! ```
+//!
+//! Relatively simple change. Most of the item-registration API is the same,
+//! with the exception of Schedules and States. See
+//! [`PluginOutput::add_schedule`] and [`PluginOutput::init_state`] for details
+//! there.
+//!
+//! # Dependencies
+//!
+//! Currently in Bevy, if you want to add another plugin while in
+//! [`Plugin::build`] you need to be certain this is the only spot that extra
+//! plugin is being added. If it's added a second time, the program crashes,
+//! but even if it didn't crash and you were adding a plugin with fields
+//! then your configuration could be overwritten by a later registration. Or, a
+//! plugin being registered twice means that all its items are registered twice
+//! too.
+//!
+//! This implementation aims to look as similar to the previous way of doing
+//! plugins as possible. To that end, adding a dependency looks like the
+//! following:
+//!
+//! ```ignore
+//! use bevy_3rd_party_crate::3rdPartyDeclarativePlugin;
+//!
+//! pub struct MyPlugin;
+//!
+//! impl DeclarativePlugin for MyPlugin {
+//!     fn build(&self, output: &PluginOutput) {
+//!         output.add_plugins(3rdPartyDeclarativePlugin);
+//!     }
+//! }
+//! ```
+//!
+//! ## Approvals
+//!
+//! Some level of control over which instance of a plugin is used is passed
+//! onto the solver. This is necessary to "solve" which instance of a plugin
+//! to use when a plugin is not a zero-sized type (even if in practice most
+//! plugins are ZSTs).
+//!
+//! In the case where plugin configuration is critical, you can specify what
+//! you _need_ as a plugin / app author like so:
+//!
+//! ```ignore
+//! output.add_plugins(
+//!     // Non-zero-sized-type plugin with config we care about.
+//!     PhysicsEnginePlugin::with_solver(Solver::Xpbd)
+//!         // This plugin only approves of other instances of the physics engine
+//!         // plugin if the correct solver is being used.
+//!         .with_approval(|engine| engine.solver == Solver::Xpbd)
+//! );
+//! ```
+//!
+//! Because not all plugins are zero-sized types, multiple plugins can register
+//! conflicting configurations of the same plugin. We need a way for plugin
+//! authors and game developers to specify what constraints they need to put on
+//! the configuration of a plugin (if any).
+//!
+//! "Approval" functions is this framework's way of doing this. These are
+//! `Fn(&T) -> bool` functions that decide if the plugin that requires a
+//! dependency "approves" of the configuration from another source.
+//!
+//! This serves a similar purpose to how we introduce version requirements to
+//! dependencies in `Cargo.toml` files, like `bevy = "0.20` being a function
+//! for choosing which bevy version to use: should match 0.20, patch versions
+//! don't matter. We can translate this to the way we do things here as:
+//!
+//! ```ignore
+//! // How `Cargo.toml` treats `bevy = "0.20"` in its constraint solving.
+//! // Illustrative of why we use approval functions to fit constraints in
+//! |bevy_crate| bevy_crate.version.major == 0 && bevy_crate.version.minor == 20;
+//!
+//! // A more constrained `bevy = "=0.15.0"`
+//! |bevy_crate| bevy_crate.version.major == 0
+//!     && bevy_crate.version.minor == 15
+//!     && bevy_crate.version.patch == 0;
+//! ```
+//!
+//! # Supported Items
+//!
+//! "Items" are the pieces of functionality and data we want to introduce to a
+//! Bevy `World`. The currently supported items are:
+//!
+//! - Systems
+//! - Resources
+//!     - Resources, like plugins, can be registered by multiple sources and
+//!       need to be "solved" in a similar way.
+//! - Schedule Labels
+//!     - These are slightly different than usual! Using [`BeforeOrAfter`] to
+//!       specify where these labels should be placed in the schedule graph.
+//!       See [`PluginOutput::add_schedule_label`] for details.
+//! - States (under the `state` flag, using resources)
+//! - Messages
+//! - Observers
+//! - Dependencies on other Declarative Plugins
+//!
+//! This project has largely been developed while reflecting on my own use of
+//! Bevy and the way my project has sprawled over time. I'm eager to hear the
+//! requirements and constraints of other users and plugin authors of the Bevy
+//! engine and how they aren't met by this design yet.
+//!
+//! # `RenderApp` and Editor tooling
+//!
+//! [`DeclarativePlugin`] has two methods that are marked deprecated that
+//! represent a possible way to expose both the `RenderApp` and future editor
+//! extension APIs.
+//!
+//! For [`RenderApp`] / Render world, we expose a [`PluginOutput<()>`] that
+//! cannot register dependencies. This communicates that the render world is
+//! a secondary concern for the
+//!
+//! The main issue with exposing these endpoints as trait methods is that they
+//! are not _extensible_. One can imagine something built atop bevy that needs
+//! access to information during or after solving time that is neither about
+//! [`RenderApp`] or engine tooling, and this rigidity does not allow that
+//! case.
+//!
+//! An alternative to this could be that each plugin stores some kind list of
+//! dyn compatible "`PluginContext`" type with the ability to register
+//! post-solve hooks to determine what to do. This a minor detail, though.
+//!
+//! # Future work
+//!
+//! Having a space between "Items registered" and "Items added to world" lets
+//! us do things like:
+//!
+//! - Choose to be a language server for the scene format.
+//! - Expose information to tooling.
+//! - Intercept hot-patching signals and modify the running world based on
+//!   what has changed, allowing new systems, observers, plugins, messages etc.
+//!   to be introduced or modified at runtime.
+//!
+//! None of this is currently implemented, but the infrastructure here makes
+//! this kind of thing possible.
+//!
+//! # Upstreaming
+//!
+//! This project aims to be upstreamed by Bevy, largely because without
+//! compatibility with the broader ecosystem it serves as an internal
+//! dependencies tool instead of an enabler of better ecosystem tooling.
+//! If you want to develop a 3rd party crate with "deep" dependencies, reach
+//! out to crate authors to put support under a flag.
 use core::any::Any;
 pub(crate) mod approval;
 pub(crate) mod erased;
@@ -11,8 +196,10 @@ use crate::entry_points::EntryPoints;
 use crate::graph::ItemGraphError;
 pub use crate::graph::PluginListExpansionError;
 use crate::graph::PluginResolutionError;
+use bevy_app::AppExit;
 #[allow(unused_imports)]
 use bevy_app::{App, Plugin};
+// Need to re-export this for error types.
 pub use erased::resource::ResourceTypeId;
 pub use erased::schedule::BeforeOrAfter;
 pub use plugin_data::PluginOutput;
@@ -25,6 +212,10 @@ pub mod entry_points;
 /// The methods of [`PluginOutput`] mirror much of what people access during
 /// plugin registration, but doesn't allow direct access to `World` before
 /// plugins have been resolved.
+///
+/// For applying things to the Render app, use the
+/// [`DeclarativePlugin::build_render`] method. This method cannot add
+/// dependencies but can otherwise still add most items.
 pub trait DeclarativePlugin: Any {
     /// Plugin registration function. Intentionally close to [`Plugin::build`].
     fn build(&self, output: &mut PluginOutput);
@@ -67,31 +258,60 @@ pub trait DeclarativePlugin: Any {
 /// or equivalent tooling.
 pub struct EditorTooling;
 
+/// A "finalized" app, used here to deter calling
+/// [`DeclrAppExt::add_plugins_declarative`] more than once.
+#[derive(Debug)]
+pub struct FinalizedApp(App);
+
+impl FinalizedApp {
+    /// Run the underlying app.
+    pub fn run(&mut self) -> AppExit {
+        self.0.run()
+    }
+
+    /// Get the [`App`] back. This is marked unsafe as an app that has already
+    /// had declarative plugins applied to it will run into undefined behavior
+    /// if the [`DeclrAppExt::add_plugins_declarative`] is called a second
+    /// time. If you need to add more plugins at the entry point site, either
+    /// nest tuples (i.e. `((A, B, C), (D, E, F))`) or move things to
+    /// dependencies of plugins you manage.
+    ///
+    /// SAFETY: Do not run [`DeclrAppExt::add_plugins_declarative`] a second
+    /// time after calling this function.
+    pub unsafe fn extract_app(self) -> App {
+        self.0
+    }
+}
+
+/// Extension trait for [`App`].
 pub trait DeclrAppExt {
     /// Add a declarative set of plugins to the app, solving for dependencies
     /// etc.
     ///
-    /// NOTE: This should only be called once, we don't account for multiple
-    /// calls to the solver.
+    /// NOTE: This should only be called once per instance of [`App`].
     #[must_use]
     fn add_plugins_declarative(
-        &mut self,
+        self,
         entry_point_list: impl EntryPoints,
-    ) -> Result<(), DeclarativePluginError>;
+    ) -> Result<FinalizedApp, DeclarativePluginError>;
 }
 
+/// Errors that can occur during declarative plugin registration.
 #[derive(Debug)]
 pub enum DeclarativePluginError {
+    /// The plugin list could not be expanded from the list of plugins.
     ExpansionError(PluginListExpansionError),
+    /// There was a missing candidate for a plugin or resource type.
     ResolutionError(PluginResolutionError),
+    /// Plugin selection failed in some way.
     ItemGraphError(ItemGraphError),
 }
 
 impl DeclrAppExt for App {
     fn add_plugins_declarative(
-        &mut self,
+        mut self,
         entry_point_list: impl EntryPoints,
-    ) -> Result<(), DeclarativePluginError> {
+    ) -> Result<FinalizedApp, DeclarativePluginError> {
         let graph = entry_point_list
             .get_output()
             .expand()
@@ -100,10 +320,10 @@ impl DeclrAppExt for App {
             .build()
             .map_err(|(err, _)| DeclarativePluginError::ItemGraphError(err))?;
         let final_order = graph
-            .build()
+            .try_finalize()
             .map_err(DeclarativePluginError::ResolutionError)?;
-        final_order.apply_to_app(self);
-        Ok(())
+        final_order.apply_to_app(&mut self);
+        Ok(FinalizedApp(self))
     }
 }
 
@@ -118,7 +338,9 @@ mod test {
     };
 
     use crate::{
-        DeclarativePlugin, DeclrAppExt, entry_points::EntryPoints, graph::PluginListExpansionError,
+        DeclarativePlugin, DeclrAppExt,
+        entry_points::{AddDependency, EntryPoints},
+        graph::PluginListExpansionError,
     };
 
     struct ShallowPluginA;
@@ -143,7 +365,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 2);
     }
 
@@ -179,7 +401,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 4);
     }
 
@@ -215,7 +437,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 1);
     }
 
@@ -267,7 +489,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.systems().count(), 1);
     }
 
@@ -407,11 +629,9 @@ mod test {
     impl DeclarativePlugin for InfiniteA {
         fn build(&self, output: &mut crate::PluginOutput) {
             let num = self.num;
-            output
-                .dependency_builder()
-                .with_config(InfiniteB { num: self.num + 1 })
-                .with_approval(move |inf_b| inf_b.num > num)
-                .build();
+            output.add_plugins(
+                InfiniteB { num: self.num + 1 }.with_approval(move |inf_b| inf_b.num > num),
+            );
         }
     }
 
@@ -422,11 +642,9 @@ mod test {
     impl DeclarativePlugin for InfiniteB {
         fn build(&self, output: &mut crate::PluginOutput) {
             let num = self.num;
-            output
-                .dependency_builder()
-                .with_config(InfiniteA { num: self.num + 1 })
-                .with_approval(move |inf_a| inf_a.num > num)
-                .build();
+            output.add_plugins(
+                InfiniteA { num: self.num + 1 }.with_approval(move |inf_a| inf_a.num > num),
+            );
         }
     }
 
@@ -473,7 +691,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.messages().count(), 3);
     }
 
@@ -501,9 +719,10 @@ mod test {
 
     #[test]
     fn labels() {
-        let mut app = App::new();
+        let app = App::new();
         let result = app.add_plugins_declarative(LabelsPlugin);
         assert_matches!(result, Ok(_));
+        let mut app = result.unwrap().0;
         app.world_mut().run_schedule(MyLabelB);
         app.world_mut().flush();
         let result = app.world_mut().get_resource_or_init::<LabelTestResource>();
@@ -516,7 +735,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.labels().count(), 2);
     }
 
@@ -538,9 +757,10 @@ mod test {
 
     #[test]
     fn observers() {
-        let mut app = App::new();
+        let app = App::new();
         let result = app.add_plugins_declarative(ObserverPluginA);
         assert_matches!(result, Ok(_));
+        let mut app = result.unwrap().0;
         app.world_mut().run_schedule(Startup);
         app.world_mut().flush();
         let result = app.world_mut().get_resource_or_init::<LabelTestResource>();
@@ -553,7 +773,7 @@ mod test {
         let expanded = list.expand();
         assert_matches!(expanded, Ok(_));
         let expanded = expanded.unwrap();
-        let order = expanded.build().unwrap().build().unwrap();
+        let order = expanded.build().unwrap().try_finalize().unwrap();
         assert_eq!(order.observers().count(), 1);
     }
 }
