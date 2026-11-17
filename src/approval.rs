@@ -44,3 +44,10 @@ impl<T, F: Fn(&T) -> bool + 'static> From<F> for Approval<T> {
         Self::new(value)
     }
 }
+
+/// A configuration paired with its approval function. For plugin and resource
+/// add functions.
+pub struct WithApproval<A, I> {
+    pub(crate) subject: A,
+    pub(crate) approval: Box<dyn for<'a> Fn(&'a I) -> bool + 'static>,
+}

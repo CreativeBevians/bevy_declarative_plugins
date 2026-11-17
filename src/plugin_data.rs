@@ -19,7 +19,7 @@ use crate::{
     approval::Approval,
     entry_points::AddDependency,
     erased::{
-        resource::{ErasedResource, ResourceTypeId, StagedResource},
+        resource::{AddResource, ErasedResource, ResourceTypeId, StagedResource},
         schedule::{BeforeOrAfter, StagedScheduleLabel, StagedSystem},
     },
     graph::DeclrItem,
@@ -222,11 +222,21 @@ impl<D> PluginOutput<D> {
         }
     }
 
-    /// Insert a resource. Not identical to [`App::insert_resource`] as we
+    /// Add a resource. Not identical to [`App::insert_resource`] as we
     /// "solve" resources like we do with plugins, but if you're the only
     /// plugin registering this resource type it'll be largely identical.
-    pub fn insert_resource<R: Resource>(&mut self, resource: R) -> &mut Self {
-        self.resource_builder().with_data(resource).build()
+    ///
+    /// If you aren't the only plugin registering this resource, then you can
+    /// configure your needs on the resource by calling
+    /// [`AddResource::with_approval`] on the resource you're adding.
+    pub fn add_resource<R: AddResource>(&mut self, resource: R) -> &mut Self {
+        resource.add_to_output(self);
+        self
+    }
+
+    /// Alias for [`Self::add_resource`].
+    pub fn insert_resource<R: AddResource>(&mut self, resource: R) -> &mut Self {
+        self.add_resource(resource)
     }
 
     /// Add a schedule label, relative to a different schedule label. This uses
@@ -348,7 +358,7 @@ impl<'a, R, D> ResourceBuilder<'a, R, PluginOutput<D>> {
     /// Set the approval function for what this plugin wants from a resource
     /// of this type.
     #[must_use]
-    pub fn with_approval<F: Fn(&R) -> bool + 'static>(mut self, f: F) -> Self
+    pub fn with_approval<F: for<'b> Fn(&'b R) -> bool + 'static>(mut self, f: F) -> Self
     where
         R: 'static,
     {
