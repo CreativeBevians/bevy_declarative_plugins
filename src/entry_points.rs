@@ -3,7 +3,10 @@
 
 use std::marker::PhantomData;
 
-use crate::{DeclarativePlugin, PluginOutput, graph::PluginList, plugin_data::PluginDependencies};
+use crate::{
+    DeclarativePlugin, PluginOutput, approval::WithApproval, graph::PluginList,
+    plugin_data::PluginDependencies,
+};
 
 /// A trait for types that contain one or more Plugin.
 pub trait EntryPoints: Sized {
@@ -68,12 +71,12 @@ pub trait AddDependency: Sized {
     fn with_approval(
         self,
         f: impl for<'a> Fn(&'a Self::Plugin) -> bool + 'static,
-    ) -> WithApproval<Self>
+    ) -> WithApproval<Self, Self::Plugin>
     where
         Self: 'static,
     {
         WithApproval {
-            plugin: self,
+            subject: self,
             approval: Box::new(f),
         }
     }
@@ -112,22 +115,17 @@ impl<A: DeclarativePlugin> AddDependency for PhantomData<A> {
     }
 }
 
-/// A plugin configuration paired with its approval function. The type
-/// parameter is trait-bound as the approval function depends on the
-/// plugin type.
-pub struct WithApproval<A: AddDependency> {
-    plugin: A,
-    approval: Box<dyn for<'a> Fn(&'a A::Plugin) -> bool + 'static>,
-}
-
-impl<A: AddDependency> AddDependency for WithApproval<A>
+impl<A: AddDependency> AddDependency for WithApproval<A, A::Plugin>
 where
     A::Plugin: DeclarativePlugin,
 {
     type Plugin = A::Plugin;
 
     fn add_to_output(self, output: &mut PluginOutput) {
-        let WithApproval { plugin, approval } = self;
+        let WithApproval {
+            subject: plugin,
+            approval,
+        } = self;
         match plugin.get_value() {
             Some(value) => output
                 .dependency_builder()
@@ -139,7 +137,7 @@ where
     }
 
     fn get_value(self) -> Option<Self::Plugin> {
-        self.plugin.get_value()
+        self.subject.get_value()
     }
 
     /// Calling `with_approval` on a [`WithApproval`] type will AND the two
@@ -149,18 +147,18 @@ where
     fn with_approval(
         self,
         f: impl for<'a> Fn(&'a Self::Plugin) -> bool + 'static,
-    ) -> WithApproval<Self>
+    ) -> WithApproval<Self, Self::Plugin>
     where
         Self: 'static,
     {
         let WithApproval {
-            plugin,
+            subject: plugin,
             approval: prev_approval,
         } = self;
 
         WithApproval {
-            plugin: WithApproval {
-                plugin,
+            subject: WithApproval {
+                subject: plugin,
                 // We avoid using the inner one, because we instead AND the
                 // previous approval with the new approval.
                 approval: Box::new(|_value: &A::Plugin| {

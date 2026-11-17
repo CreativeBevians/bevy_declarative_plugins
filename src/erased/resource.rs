@@ -2,7 +2,12 @@ use std::any::{TypeId, type_name};
 
 use bevy_ecs::{resource::Resource, world::World};
 
-use crate::{approval::Approval, erased::schedule::Staged, metadata_ptr::MetadataPtr};
+use crate::{
+    PluginOutput,
+    approval::{Approval, WithApproval},
+    erased::schedule::Staged,
+    metadata_ptr::MetadataPtr,
+};
 
 /// A type erased [`Resource`], implemented using a [`MetadataPtr`].
 pub(crate) struct ErasedResource(pub(crate) MetadataPtr);
@@ -82,5 +87,98 @@ impl StagedResource {
     #[allow(unused)]
     pub(crate) fn erased_type_id(&self) -> ResourceTypeId {
         self.type_id
+    }
+}
+
+/// Helper trait for making adding resources to a plugin easier. Nearly
+/// identical to [`crate::entry_points::AddDependency`].
+pub trait AddResource: Sized {
+    type Resource: Resource;
+
+    /// Add `self` to the [`PluginOutput`] of a plugin.
+    fn add_to_output<D>(self, output: &mut PluginOutput<D>);
+
+    /// Create a version of this resource with an approval function.
+    fn with_approval(
+        self,
+        f: impl for<'a> Fn(&'a Self::Resource) -> bool + 'static,
+    ) -> WithApproval<Self, Self::Resource>
+    where
+        Self: 'static,
+    {
+        WithApproval {
+            subject: self,
+            approval: Box::new(f),
+        }
+    }
+
+    /// Get the underlying resource value.
+    fn get_value(self) -> Option<Self::Resource>;
+}
+
+impl<R> AddResource for R
+where
+    R: Resource,
+{
+    type Resource = R;
+
+    fn add_to_output<D>(self, output: &mut PluginOutput<D>) {
+        output.resource_builder().with_data(self).build();
+    }
+
+    fn get_value(self) -> Option<Self::Resource> {
+        Some(self)
+    }
+}
+
+impl<S> AddResource for WithApproval<S, S::Resource>
+where
+    S: AddResource,
+{
+    type Resource = S::Resource;
+
+    fn add_to_output<D>(self, output: &mut PluginOutput<D>) {
+        let WithApproval { subject, approval } = self;
+        match subject.get_value() {
+            Some(value) => output
+                .resource_builder()
+                .with_data(value)
+                .with_approval(approval)
+                .build(),
+            None => todo!(),
+        };
+    }
+
+    fn get_value(self) -> Option<Self::Resource> {
+        todo!()
+    }
+
+    /// Calling `with_approval` on a [`WithApproval`] type will AND the two
+    /// approval functions, "nested" [`WithApproval`] instances will have their
+    /// functions replaced with panicking approval functions as only the
+    /// topmost approval should be used.
+    fn with_approval(
+        self,
+        f: impl for<'a> Fn(&'a Self::Resource) -> bool + 'static,
+    ) -> WithApproval<Self, Self::Resource>
+    where
+        Self: 'static,
+    {
+        let WithApproval {
+            subject,
+            approval: prev_approval,
+        } = self;
+
+        WithApproval {
+            subject: WithApproval {
+                subject,
+                // We avoid using the inner one, because we instead AND the
+                // previous approval with the new approval.
+                approval: Box::new(|_value: &S::Resource| {
+                    panic!("Should not use inner approval function")
+                }),
+            },
+            approval: Box::new(move |value: &S::Resource| f(value) && prev_approval(value)),
+        }
     }
 }

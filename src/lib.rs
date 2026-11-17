@@ -47,22 +47,24 @@
 //!
 //! Relatively simple change. Most of the item-registration API is the same,
 //! with the exception of Schedules and States. See
-//! [`PluginOutput::add_schedule`] and [`PluginOutput::init_state`] for details
-//! there.
+//! [`PluginOutput::add_schedule_label`] and [`PluginOutput::init_state`] for
+//! details there.
 //!
 //! # Dependencies
 //!
-//! Currently in Bevy, if you want to add another plugin while in
-//! [`Plugin::build`] you need to be certain this is the only spot that extra
-//! plugin is being added. If it's added a second time, the program crashes,
-//! but even if it didn't crash and you were adding a plugin with fields
-//! then your configuration could be overwritten by a later registration. Or, a
-//! plugin being registered twice means that all its items are registered twice
-//! too.
+//! Right now, in vanilla Bevy, if you want a plugin you author to rely on
+//! another plugin, you need to be certain it's only added from a single place.
+//!
+//! If the plugin you depend on is added a second time, the program crashes.
+//! Even if it didn't crash and you were adding a plugin with fields then your
+//! configuration might not be respect by an earlier or later registration. Or,
+//! a plugin being registered twice would mean that all its items are
+//! registered twice too.
 //!
 //! This implementation aims to look as similar to the previous way of doing
-//! plugins as possible. To that end, adding a dependency looks like the
-//! following:
+//! plugins as possible while making dependencies behave as you'd expect them
+//! to, just working out of the box. To that end, adding a dependency looks
+//! like the following:
 //!
 //! ```ignore
 //! use bevy_3rd_party_crate::3rdPartyDeclarativePlugin;
@@ -70,7 +72,7 @@
 //! pub struct MyPlugin;
 //!
 //! impl DeclarativePlugin for MyPlugin {
-//!     fn build(&self, output: &PluginOutput) {
+//!     fn build(&self, output: &mut PluginOutput) {
 //!         output.add_plugins(3rdPartyDeclarativePlugin);
 //!     }
 //! }
@@ -121,6 +123,24 @@
 //!     && bevy_crate.version.patch == 0;
 //! ```
 //!
+//! # Resources
+//!
+//! Plugins can also register resources. Resources are much more likely to be
+//! modified during runtime, but there can still be cases where the starting
+//! value of a resource is critical and there are disagreements between plugins
+//! registering the same resource.
+//!
+//! You can use this same Approval feature to put constraints on what you
+//! need from the initial state of a resource as a plugin author, just like
+//! with a plugin dependency you rely on:
+//!
+//! ```ignore
+//! #[derive(Debug, Resource)]
+//! struct MyResource { num: usize }
+//! // ...
+//! output.add_resource(MyResource { num: 7 }.with_approval(|res| res.num >= 6));
+//! ```
+//!
 //! # Supported Items
 //!
 //! "Items" are the pieces of functionality and data we want to introduce to a
@@ -150,9 +170,10 @@
 //! represent a possible way to expose both the `RenderApp` and future editor
 //! extension APIs.
 //!
-//! For [`RenderApp`] / Render world, we expose a [`PluginOutput<()>`] that
-//! cannot register dependencies. This communicates that the render world is
-//! a secondary concern for the
+//! For `RenderApp` / Render world, we expose a [`PluginOutput<()>`]: a version
+//! of [`PluginOutput`] that cannot register dependencies. This communicates
+//! that the render world is a secondary concern for plugin developers, and
+//! that operations being performed on it are not happening to the main world.
 //!
 //! The main issue with exposing these endpoints as trait methods is that they
 //! are not _extensible_. One can imagine something built atop bevy that needs
@@ -177,6 +198,20 @@
 //!
 //! None of this is currently implemented, but the infrastructure here makes
 //! this kind of thing possible.
+//!
+//! # How Candidate Plugins are Chosen
+//!
+//! The algorithm for choosing which instance of conflicting, non-zst plugins
+//! gets used is (loosely) as follows:
+//!
+//! 1. A plugin must pass all approval functions that exist for it to be
+//!    picked.
+//! 2. The plugin closest to the "root" of the tree that passes the approval
+//!    functions will be chosen.
+//!
+//! The "root" of the dependency tree is whatever is added at
+//! [`DeclrAppExt::add_plugins_declarative`], as this is the single entry point
+//! an app developer has more control over than a plugin developer.
 //!
 //! # Upstreaming
 //!
@@ -340,6 +375,7 @@ mod test {
     use crate::{
         DeclarativePlugin, DeclrAppExt,
         entry_points::{AddDependency, EntryPoints},
+        erased::resource::AddResource,
         graph::PluginListExpansionError,
     };
 
@@ -522,10 +558,7 @@ mod test {
 
     impl DeclarativePlugin for ResourceCheckK {
         fn build(&self, output: &mut crate::PluginOutput) {
-            output
-                .resource_builder()
-                .with_data(TestResourceA(67))
-                .build();
+            output.add_resource(TestResourceA(67));
         }
     }
 
@@ -533,11 +566,7 @@ mod test {
 
     impl DeclarativePlugin for ResourceCheckL {
         fn build(&self, output: &mut crate::PluginOutput) {
-            output
-                .resource_builder()
-                .with_data(TestResourceA(20))
-                .with_approval(|data| data.0 % 2 == 1)
-                .build();
+            output.add_resource(TestResourceA(20).with_approval(|data| data.0 % 2 == 1));
         }
     }
 
@@ -592,11 +621,7 @@ mod test {
 
     impl DeclarativePlugin for ResourceFailureCheckN {
         fn build(&self, output: &mut crate::PluginOutput) {
-            output
-                .resource_builder()
-                .with_data(TestResourceA(100))
-                .with_approval(|_| false)
-                .build();
+            output.add_resource(TestResourceA(100).with_approval(|_| false));
         }
     }
 
@@ -604,11 +629,7 @@ mod test {
 
     impl DeclarativePlugin for ResourceFailureCheckO {
         fn build(&self, output: &mut crate::PluginOutput) {
-            output
-                .resource_builder()
-                .with_data(TestResourceA(100))
-                .with_approval(|_| false)
-                .build();
+            output.add_resource(TestResourceA(100).with_approval(|_| false));
         }
     }
 
