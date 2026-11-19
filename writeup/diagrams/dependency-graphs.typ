@@ -62,6 +62,18 @@
   )
 }
 
+#let plugins-solved() = {
+  diagram(
+    node-stroke: .1em,
+    spacing: 3em,
+    node((0, 0), name: <A>, [$A_2$]),
+    node((-1, 1), name: <B>, [$B_1$]),
+    node((1, 1), name: <C>, [$C_2$]),
+    edge(<A>, <C>, "-->"),
+    edge(<C>, <B>, "-->"),
+  )
+}
+
 #let conflict() = {
   diagram(
     node-stroke: .1em,

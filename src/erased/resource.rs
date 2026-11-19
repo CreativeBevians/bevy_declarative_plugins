@@ -55,7 +55,7 @@ impl StagedResource {
                         MetadataPtr::new(resource).expect("Allocation failure."),
                     ))
                 }),
-                unerase_and_apply_to_world: Self::reverse_erase_apply_to_world::<R>,
+                reverse_erasure_and_apply_to_world: Self::reverse_erase_apply_to_world::<R>,
             },
             type_id: ResourceTypeId::of::<R>(),
         })

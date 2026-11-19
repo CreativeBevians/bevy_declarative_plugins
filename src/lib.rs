@@ -80,7 +80,7 @@
 //!
 //! ## Approvals
 //!
-//! Some level of control over which instance of a plugin is used is passed
+//! Some level of control over which instance of a plugin is used is moved
 //! onto the solver. This is necessary to "solve" which instance of a plugin
 //! to use when a plugin is not a zero-sized type (even if in practice most
 //! plugins are ZSTs).
@@ -108,13 +108,14 @@
 //! dependency "approves" of the configuration from another source.
 //!
 //! This serves a similar purpose to how we introduce version requirements to
-//! dependencies in `Cargo.toml` files, like `bevy = "0.20` being a function
+//! dependencies in `Cargo.toml` files, like `bevy = "0.20"` being a function
 //! for choosing which bevy version to use: should match 0.20, patch versions
 //! don't matter. We can translate this to the way we do things here as:
 //!
 //! ```ignore
 //! // How `Cargo.toml` treats `bevy = "0.20"` in its constraint solving.
 //! // Illustrative of why we use approval functions to fit constraints in
+//! // plugin management here.
 //! |bevy_crate| bevy_crate.version.major == 0 && bevy_crate.version.minor == 20;
 //!
 //! // A more constrained `bevy = "=0.15.0"`

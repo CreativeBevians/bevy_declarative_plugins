@@ -1,3 +1,20 @@
+//! Module containing the process of turning the "Entry point" plugins
+//! into a dependency graph, solving that dependency graph, then turning the
+//! solved graph into a list of items to add to a Bevy world.
+//!
+//! The core types and transforms for this process are:
+//!
+//! 1. [`EntryPoints`] -> [`PluginList`], turning a (potentially nested) tuple
+//!    of plugins into the list of root plugins we care most about.
+//! 2. [`PluginList`] -> [`PluginRegistrationGraph`], expanding that list of
+//!    plugins into a graph.
+//! 3. [`PluginRegistrationGraph`] -> [`DependenciesSolvedGraph`], solving
+//!    dependencies and constraints from the registration graph to choose the
+//!    right output to use.
+//! 4. [`DependenciesSolvedGraph`] -> [`OrderedPluginItems`], turning that
+//!    solved graph into an ordered list of items to register with a world.
+//!
+//!
 use bevy_ecs::observer::Observer;
 use bevy_platform::collections::HashMap;
 use core::{convert::identity, hash::Hash};
@@ -78,7 +95,7 @@ impl PluginList {
     /// instances of a given type to prevent infinite expansion. See:
     /// [`PluginListExpansionError::TooManyPluginInstances`].
     pub(crate) fn expand(mut self) -> Result<PluginRegistrationGraph, PluginListExpansionError> {
-        let mut zst_already_expanded: HashMap<PluginTypeId, RegistrationId> = HashMap::new();
+        let mut zst_already_expanded: HashMap<PluginTypeId, InstanceId> = HashMap::new();
         let mut graph = PluginRegistrationGraph::new(250);
         for (_, output) in &mut self.nodes {
             // Mark entry points.
@@ -176,9 +193,9 @@ impl PluginList {
 
 /// Sequential identifier for plugin registration.
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Clone, Copy)]
-pub(crate) struct RegistrationId(usize, PluginTypeId);
+pub(crate) struct InstanceId(usize, PluginTypeId);
 
-impl RegistrationId {
+impl InstanceId {
     pub(crate) fn plugin_id(&self) -> PluginTypeId {
         self.1
     }
@@ -188,7 +205,7 @@ impl RegistrationId {
 /// register.
 pub(crate) struct PluginInstance {
     /// Sequential registration identifier.
-    pub(crate) registration_id: RegistrationId,
+    pub(crate) registration_id: InstanceId,
     /// Type-erased plugin configuration data.
     pub(crate) plugin_data: Box<dyn DeclarativePlugin>,
     /// The items the plugin wants to add to the App.
@@ -220,7 +237,7 @@ impl Debug for PluginInstance {
 pub(crate) struct PluginRegistrationGraph {
     registration_counter: usize,
     nodes: HashMap<PluginTypeId, Vec<PluginInstance>>,
-    dependency_edges: HashMap<RegistrationId, Vec<PluginTypeId>>,
+    dependency_edges: HashMap<InstanceId, Vec<PluginTypeId>>,
     max_repeat_instances: usize,
 }
 
@@ -235,10 +252,10 @@ impl Debug for PluginRegistrationGraph {
 }
 
 impl PluginRegistrationGraph {
-    /// Generate a new, unique [`RegistrationId`]. Increments an internal
+    /// Generate a new, unique [`InstanceId`]. Increments an internal
     /// counter.
-    fn new_id(&mut self, plugin_id: PluginTypeId) -> RegistrationId {
-        let id = RegistrationId(self.registration_counter, plugin_id);
+    fn new_id(&mut self, plugin_id: PluginTypeId) -> InstanceId {
+        let id = InstanceId(self.registration_counter, plugin_id);
         self.registration_counter += 1;
         id
     }
@@ -268,7 +285,7 @@ impl PluginRegistrationGraph {
         &mut self,
         plugin_data: Box<dyn DeclarativePlugin>,
         output: PluginOutput<D>,
-    ) -> (RegistrationId, D) {
+    ) -> (InstanceId, D) {
         let plugin_id = output.working_plugin;
         let registration_id = self.new_id(plugin_id);
         let (output, dependencies) = output.extract_dependencies();
@@ -333,7 +350,7 @@ impl PluginRegistrationGraph {
     /// Get the registration IDs of each valid candidate.
     /// Called naive here because it doesn't cull valid candidates that were
     /// added but aren't depended on by anything.
-    pub(crate) fn naive_candidates(&self) -> Result<Vec<RegistrationId>, ()> {
+    pub(crate) fn naive_candidates(&self) -> Result<Vec<InstanceId>, ()> {
         let mut candidates = Vec::new();
         for plugin_id in self.plugin_ids() {
             // Expensive! There is almost definitely a faster way of doing this
@@ -344,7 +361,7 @@ impl PluginRegistrationGraph {
         Ok(candidates)
     }
 
-    pub(crate) fn candidate_exists(&self, plugin_id: PluginTypeId) -> Result<RegistrationId, ()> {
+    pub(crate) fn candidate_exists(&self, plugin_id: PluginTypeId) -> Result<InstanceId, ()> {
         let mut working = None;
         // We have two loops here, the outer loop is to go through each candidate.
         // The inner loop is to find out if there is any version of this
@@ -396,7 +413,7 @@ impl PluginRegistrationGraph {
         working.ok_or(())
     }
 
-    pub(crate) fn get(&self, registration_id: RegistrationId) -> Option<&PluginInstance> {
+    pub(crate) fn get(&self, registration_id: InstanceId) -> Option<&PluginInstance> {
         self.instances_of_plugin(registration_id.plugin_id())
             .find(|node| node.registration_id == registration_id)
     }
@@ -440,10 +457,10 @@ impl PluginRegistrationGraph {
     /// All the dependency edges in the graph.
     ///
     /// Note that this is from a specific instance in the graph
-    /// ([`RegistrationId`]) to a more general plugin type. This reflects
+    /// ([`InstanceId`]) to a more general plugin type. This reflects
     /// the way dependencies can only specify their needs with an approval
     /// function, rather than demanding a specific instance.
-    pub(crate) fn insert_edge(&mut self, from: RegistrationId, to: PluginTypeId) {
+    pub(crate) fn insert_edge(&mut self, from: InstanceId, to: PluginTypeId) {
         self.dependency_edges.entry(from).or_default().push(to);
     }
 }
