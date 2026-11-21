@@ -35,15 +35,17 @@
 
 #let cols = 1
 
-#title()[Declarative Plugins for ECS Worlds - Draft]
+#title()[Draft: Declarative Plugins for ECS Worlds]
 
 #columns(cols)[
 
 = Intro
 
-The inspiration for this approach was first thinking about how build systems like Cargo or npm manage dependencies, as well as asking myself "how could hot-patching support the addition/removal of systems." The latter has not been addressed here, but the API surface of plugins has been made more restrictive in ways that make it possible to start reasoning about "diffing" plugin registration in future.
+Plugins are how we meaningfully group sets of types and behaviour together in Bevy and other ECSs. The engine itself is made up of plugins, 3rd party crates make themselves available to developers as plugins, and we are encouraged to structure our code as plugins. The current plugin implementation has sharp edges, registering the same plugin twice crashes the program, and dependencies have been on the wishlist since very early on#footnote()[See: #link("https://github.com/bevyengine/bevy/issues/69")].
 
-A declarative model of plugins would, rather than hand the user arbitrary code execution on the `World` during registration, let the user expose a data structure for Bevy to turn into a running Bevy app.
+This article discusses the implementation details
+
+A reference implementation can be found at #link("https://github.com/CreativeBevians/bevy_declarative_plugins"), where the shape of the API is documented rather than the implementation details found here.
 
 = Motivation
 
@@ -56,7 +58,7 @@ We can imagine easy non-crashing behaviour that still means a developer's prefer
 This design approaches this complexity with three main goals:
 
 1. Separate plugin registration from modifying `&mut World` or `&mut App` directly.
-2. Respect the practical needs of people developing Bevy apps, including how their app-authorship-level decisions should be prioritised over those of plugin or engine authors.
+2. Respect the practical needs of developers building Bevy apps, including how their app-authorship-level decisions should be prioritised over those of plugin or engine authors.
 3. Match the current API shape as much as possible.
 
 This comes with an intent to enable the following in future:
@@ -76,7 +78,7 @@ app.run();
 ```
 ]<currentcode>
 
-#figure()[
+#figure(caption: [A plugin definition.])[
 ```rs
 impl Plugin for UserPluginB {
   fn register(&self, app: &mut App) {
@@ -89,20 +91,22 @@ impl Plugin for UserPluginB {
   }
 }
 ```
-]
+]<currentdef>
 
 = Terminology
 
-- Item: An additive change we want to make to `World`, usually representing "add this System" or "I need this message type."
-- Entry Points: The plugins that an app author would add to the ECS `World`. These are at the "Root" of the dependency graph.
-- Unsolved Graph: A graph whose nodes each contain a list of possible candidate plugins of the same type.
-- Solved Graph: A graph whose nodes are single, unique candidates of each plugin type.
-- Staged Item: Pairing of an erased Item and a function that can reverse the type erasure and add that item to an ECS `World`.
-- Plugin Instance: A value of a type that implements `DeclarativePlugin`/`Plugin`.
+- *Item*: An additive change we want to make to `World`, usually representing "add this System" or "Register this message type."
+- *Entry Points*: The plugins that an app author would add to the ECS `World`. These are at the "Root" of the dependency graph.
+- *Unsolved Graph*: A graph whose nodes each contain a list of possible candidate plugins of the same type.
+- *Solved Graph*: A graph whose nodes are single, unique candidates of each plugin type.
+- *Staged Item*: Pairing of an erased Item and a function that can reverse the type erasure and add that item to an ECS `World`.
+- *Plugin Instance*: A value of a type that implements `DeclarativePlugin`/`Plugin`.
+- *Candidate Plugin*: A plugin instance that is approved of by plugins that depend on it.
+- *Chosen Candidate*: A plugin instance that will be used by the final `App`.
 
 = Data Structures
 
-The transform we want to pursue is going from a list of "Entry Points," to a graph, to a "solved" graph, to a list of items we can register with an ECS world.
+The transform we want to pursue is going from a list of "Entry Points," to an Unsolved Graph, to a Solved Graph, to a list of items we can register with an ECS world.
 
 Here we'll work backwards, from answering "how do we erase and then register items with `World`" back through solved vs unsolved graphs. These do not represent the user-facing API, but the mechanisms that make the API and expected behaviour possible.
 
@@ -132,6 +136,8 @@ struct OrderedPluginItems(Vec<DeclrItem>);
 Two of these Items are simple: `Observer` is a `bevy_ecs` type, and `MessageRegistration` is a pointer to `App::add_message::<T>` where `T` implements `Message`.
 
 `StagedResource`, `StagedSystem`, and `StagedScheduleLabel` each exist for their own reasons. `StagedResource` gets around how `Resource` is not a _dyn-compatible_ trait. `StagedSystem` and `StagedScheduleLabel` simplify the registration process for highly-typed parts of the Bevy API.
+
+This list does not enumerate all possible registrations one can make on an `App`, but extending it is trivial so long as new items do not introduce more complex ordering constraints.
 
 == Erased and Staged Values
 
@@ -187,13 +193,13 @@ Finding a subgraph can be a very expensive operation, and doesn't always express
   #if_html(plugins-ungrouped())
 ]<naive-graph2>
 
-This expresses dependencies in a way that is fine-grained, but doesn't line up with how dependencies work in something like a build system where you accept that a solver is going to do some of the work for you.
+This expresses dependencies in a way that is fine-grained, but doesn't line up with how dependencies work in a build system, where you accept that a solver is going to do some of the work for you.
 
 Instead, we put all instances of the same plugin type into a node together and let them depend on whole plugin types, not instances.
 
 An unsolved graph has nodes that store each instance of a plugin of a given type, and edges between each _instance_ to each _plugin type_. That is, $A_1, A_2, A_3 in A$ are all _instances_ of a plugin type `A: Plugin`, and edges are pairs of `(InstanceId, PluginTypeId)` (expressed in @unsolved-graph as $A_n ->_"dep" C$). When expressing dependencies, they can only point towards a plugin type, not a plugin instance.
 
-#figure(caption: [An unsolved graph, with multiple instances of plugins of types $A$ and $C$, and only one instance of $A$ that depends on $B$.])[
+#figure(caption: [An version of the graph in @naive-graph2 that groups instances together.])[
   #import "diagrams/dependency-graphs.typ": plugins-grouped
   #if_html(plugins-grouped())
 ] <unsolved-graph>
@@ -211,7 +217,7 @@ A Solved Graph is one where we only have one instance of every plugin. It exists
 
 The process of choosing a resource is similar to that of choosing a plugin instance, which will be explored later.
 
-== Approval Functions
+== Approval Functions <approval-defh>
 
 In #link("https://doc.rust-lang.org/cargo/reference/resolver.html#semver-compatibility")[Cargo], and other modern package managers, versions of dependencies are usually chosen through some form of SAT solve on the version numbers of the dependencies.
 
@@ -234,6 +240,9 @@ impl DeclarativePlugin for A {
     fn build(&self, output: &mut PluginOutput) {
         // C is not an entry point.
         output.add_dependencies(C)
+        // An alias for `add_dependencies`, so
+        // D is still not an entry point.
+        output.add_plugins(D)
     }
 }
 ```
@@ -273,34 +282,20 @@ Other than information necessary for our graph solving and the erased storage fi
 
 = Algorithms
 
+With data structures established, we now need to consider how we transform between those structures.
+
 == Ordering of Bevy Items
 
-- Systems.
-- Observers.
-- Resources (states get wrapped up in this).
-- Schedule Labels.
-- Event types (Messages and Entity Events. This amounts to type registration.)
-- Other plugins ("Dependencies.")
+The current ordering algorithm seeks to group all Item Kinds (i.e. Systems, Resources, Observers etc.) together. 
+This ordering behaviour may change over time as new Item Kinds are supported or ordering constraints change, but with the current supported Item Kinds this functions well. At time of writing the order we want is as follows:
 
+1. Messages / Events (Type registration, Zero Dependencies.)
+2. Schedule Labels (Zero Dependencies but might want to depend on States, but states are Resources.)
+3. Observers (Wants to know Events.)
+4. Systems (Wants to know Schedule Labels.)
+5. Resources (Resources are Entities, and so we want to know any global lifetime hooks.)
 
-1. Other Plugins (We want everything we depend on to be present first.)
-2. Messages / Events (Type registration, Zero Dependencies.)
-3. States (Are a resource.)
-4. Schedule Labels (Zero Dependencies but might want to depend on States.)
-5. Observers (Hypothetically wants to know Events.)
-6. Systems (Wants to know Schedule Labels.)
-7. Resources (Wants to know Observers due to Resources As Entities.)
-
-(1) leaves us needing to recursively perform (2-7) for all prior plugins as part of the resolution tree.
-
-(2-3) can be done all at once, without any ordering applied.
-
-(4) can be done across all plugins, but there are dependencies between them.
-
-(5, 7) can be done across all plugins after all event types are registered (3).
-
-(6) can be done across all plugins after all schedule labels are registered (4)
-
+Bevy's use of Interning makes some of the type information dependencies (such as a System requiring a Schedule that requires a State, which is a Resource) between either irrelevant, or at least presents a path to make those dependencies irrelevant.
 
 == Unsolved Graph Construction Algorithm
 
@@ -308,7 +303,7 @@ Constructing the unsolved graph has its own nuances we want to consider. The alg
 
 As shown in @unsolved-h, the shape of an unsolved graph is that where nodes are comprised of many plugin instances, and edges are from instance to node to represent the "lossy" nature of depending on something.
 
-For zero-sized types, which comprise most plugin types in practice, we can make some assumptions that simplify the expansion process. These are accounted for in @graph-construction.
+For zero-sized types, which comprise most plugin types in practice, we can make some assumptions that simplify the expansion process. These are accounted for in @graph-construction, and covered more in @zst-h.
 
 If we come across a plugin config that fails approval by anything that depends on it, then we can decide to avoid evaluating it at all. We eagerly remove these, so even if one instance of a plugin disapproves of it and the rest of those plugins don't then the instance that is being evaluated will be discarded.
 
@@ -327,7 +322,7 @@ We can construct a plugin approval function for two plugins that, left unchecked
 3. $A(n)$ requires $B(n + 1)$, approves $B$ only if $B_0 > n$
 4. $B(m)$ requires $A(m + 1)$, approves $A$ only if $A_0 > m$
 
-We can see this expansion happen in @inf, where every existing instance of $A$ or $B$ do not meet the approval functions registered by either.
+The cause of the infinite expansion is that all smaller instances will approve of all larger instances, but all larger instances disapprove of all smaller instances. We can see this expansion in @inf where the arrows above the nodes represent how each instance approves of later plugins, and the arrows below the nodes represent how later plugins disapprove of earlier plugin instances:
 
 #figure(caption: [Infinitely expanding dependency, where $A(0)$ is the entry point.])[
   #diagram(
@@ -344,23 +339,36 @@ We can see this expansion happen in @inf, where every existing instance of $A$ o
     edge(<B1>, <A2>, "-|>"),
     edge(<A2>, <B3>, "-|>"),
     edge(<B3>, <A4>, "-|>"),
-    edge(<A4>, <inf>, "--|>"),
+    edge(<A4>, <inf>, "-|>"),
+    // Non-approvals
     edge(<B1>, <A0>, bend: 90deg, "-|>", stroke: (paint: red)),
-    edge(<A2>, <B1>, bend: -90deg, "-|>", stroke: (paint: red)),
+    edge(<A2>, <B1>, bend: 90deg, "-|>", stroke: (paint: red)),
     edge(<B3>, <A0>, bend: 90deg, "-|>", stroke: (paint: red)),
     edge(<B3>, <A2>, bend: 90deg, "-|>", stroke: (paint: red)),
     edge(<B1>, <A0>, bend: 90deg, "-|>", stroke: (paint: red)),
-    edge(<A4>, <B1>, bend: -90deg, "-|>", stroke: (paint: red)),
+    edge(<A4>, <B1>, bend: 90deg, "-|>", stroke: (paint: red)),
+    edge(<A4>, <B3>, bend: 90deg, "-|>", stroke: (paint: red)),
+    edge(<inf>, <A4>, bend: 90deg, "-|>", stroke: (paint: red, dash: "dashed")),
+    // Approvals
+    edge(<A0>, <B1>, bend: 90deg, "-|>", stroke: (paint: green)),
+    edge(<B1>, <A2>, bend: 90deg, "-|>", stroke: (paint: green)),
+    edge(<A0>, <B3>, bend: 90deg, "-|>", stroke: (paint: green)),
+    edge(<A2>, <B3>, bend: 90deg, "-|>", stroke: (paint: green)),
+    edge(<A0>, <B1>, bend: 90deg, "-|>", stroke: (paint: green)),
+    edge(<B1>, <A4>, bend: 90deg, "-|>", stroke: (paint: green)),
+    edge(<B3>, <A4>, bend: 90deg, "-|>", stroke: (paint: green)),
+    edge(<A4>, <inf>, bend: 90deg, "-|>", stroke: (paint: green, dash: "dashed")),
+    
   )
 ] <inf>
 
-The issue here is that all smaller instances will approve of all larger instances, but all larger instances disapprove of all smaller instances.
+We avoid this consuming all machine resources by having a limit for the number of instances of a single plugin. The breadth-first approach to expansion lets us, in the case of a less-infinite version of this, bias towards instances closer to the app developer's intent.
 
-We avoid this consuming all resources by having a limit for the number of instances of a single plugin. The breadth-first approach to expansion lets us, in the case of a less-infinite version of this, bias towards instances closer to the app developer's intent.
+In the case of infinite expansion, detecting repeating sub-cycles in a graph may be desirable from a point of completeness. This approach isn't necessarily practical for developers. Having a low ceiling on how many instances of a plugin can be registered before the resolution process returns an error lets us keep startup times in player/user-friendly timescales and keeps errors simple to interpret.
 
-In the case of infinite expansion, detecting repeating sub-cycles in a graph may be more desirable from a point of soundness. This isn't practical for people whose main concern is building and shipping a game or app. Having a low ceiling on how many instances of a plugin can be registered before the resolution process returns an error makes more sense for keeping startup times in player/user-friendly timescales and keeping errors interpretable to developers.
+// Todo: Make it so that error types include the plugins with the most instances.
 
-=== Zero-Sized Plugin Types
+=== Zero-Sized Plugin Types <zst-h>
 
 Most plugin types are _Zero-Sized Types_ (ZSTs) in that they are a struct of the form in @zst-fig, equivalent to `()`.
 
@@ -375,25 +383,37 @@ A ZST only has one valid state. This allows us to make the following assumptions
 1. Any two instances of a ZST are the same semantically. $A = A$.
 2. The output of any two instances of a ZST are the same.
 
+Using these assumptions, we only need to store the first `PluginOutput` we see for a ZST plugin.
+
 (1) holds when the ZST implements `'static`, as `Any` has been introduced as a supertrait for plugins this holds for all plugins. 
 
-(2) can be violated by users running code dependent on information available to the machine it is running on (i.e. random information, clock time). We can weaken this into the assertion "We will only use the first output from a ZST plugin," so that even if a plugin does violate the strong form of (2) it isn't relevant to the graph expansion process.
+(2) can be violated by users running code dependent on information available to the machine it is running on (i.e. random information, clock time). We don't have to respect this, and choose to only use the first output from a ZST plugin anyway rather than try to respect a plugin configuration whose input type we can't meaningfully inspect.
 
 == Solving the Graph
 
-Graph construction was conducted in such a way where the graph solve is relatively simple:
+Solving an Unsolved Graph takes the form:
 
-1. Apply all approval functions to all instances.
-2. Pick the instances that passed approval that are closest to the entry points, if not entry points themselves.
+1. Find all plugins that have an approval function for another plugin.
+2. Filter out all plugin instances that do not pass approval functions.
+3. Pick the remaining instances that are closest to the entry points.
 
-=== Applying Approval Functions <approvalh>
+=== Resolving Conflicts with Approval Functions <approvalh>
+
+When two plugins register separate instances of a plugin type as a dependency, and that dependency is not a ZST, we have to make a choice between which instance to use. In @plugin-conflict we can see a simple version of this:
+
+#figure(caption: [A plugin dependency graph with a conflict between two non-_ZST_ plugins.])[
+  #import "diagrams/dependency-graphs.typ": conflict-req
+  #if_html(conflict-req())
+]<plugin-conflict>
+
+To do this, we make use of the approval functions described in @approval-defh. As `DeclarativePlugin` is both dyn compatible and has `Any` as a supertrait, our well-typed approval functions#footnote()[See: `src/approval.rs` in the reference implementation.] are erased over a `dyn DeclarativePlugin` and cast down.
 
 #figure(caption:[Expansion of the conflict in @plugin-conflict, showing the results of the approval functions.])[
   #import "diagrams/dependency-graphs.typ": conflict
   #if_html(conflict())
 ] <conflict-expansion>
 
-#figure(caption: [Table formulation of @conflict-expansion.])[
+#figure(caption: [Matrix formulation of @conflict-expansion.])[
   #table(
     columns: (auto, auto, auto),
     align: center + horizon,
@@ -404,34 +424,94 @@ Graph construction was conducted in such a way where the graph solve is relative
   )
 ]<table-expansion>
 
-=== Choosing Between Instances
+Plugin Developers have full control over what happens in `DeclarativePlugin::build`, and they can decide that the value of `&self` affects the approval functions it registers for other plugins. in @value-different $F_1$ and $F_2$ have different approval functions, and because of this $G_5$ will not be chosen as a valid instance of $G$ despite us not knowing which instance of $F$ will be the chosen instance. This short-circuiting is overly eager, but means we do not need to find a subgraph.
 
-#figure(caption: [Entry point distances.])[
+#figure(caption: [An approval matrix for ])[
+  #let f(s) = {
+    if s == false {
+      return table.cell(fill: red.lighten(67%))[false]
+    } else {
+      return [true]
+    }
+  }
+  #table(
+    columns: (auto,auto,auto,auto,auto,auto,),
+    align: center + horizon,
+    table.header([], [$G_1$], [$G_2$], $G_3$, $G_4$, $G_5$),
+    $f_1 in D$, f(true), f(false), f(false), f(false), f(true),
+    $f_2 in E$, f(true), f(false), f(false), f(true), f(true),
+    $f_3 in F_1$, f(true), f(false), f(true), f(true), f(true),
+    $f_4 in F_2$, f(true), f(false), f(true), f(true), f(false),
+    [Valid Candidate], "yes", "no", "no", "no", "no",
+    [Chosen Candidate], "yes", "", "", "", "no"
+  )
+] <value-different>
+
+=== No Valid Candidates
+
+When there is no valid candidate, this is considered a valid case to error and not produce a valid configuration. This is analogous to the way Cargo will error when there is no valid dependency candidate.
+
+=== Choosing Between Candidates
+
+In the case where we have more than one valid candidate, we choose based on distance from Entry Points where a lower distance is more preferred. If a plugin is an entry point, its distance will be 0 and will be chosen over any other valid candidate. In @distances we would choose $D_4$, as its distance would be 0. This represents how the developer, adding $D_4$ as an entry point plugin, has stated a preference for that particular configuration.
+
+#figure(caption: [Entry point distances for instances of a plugin type $D$ in a dependency graph.])[
   #import "diagrams/dependency-graphs.typ": distance
   #if_html(distance())
-]
+] <distances>
 
-=== Conflicting Requirements
+Distances are a piece of information used to break stalemates between valid configurations _after_ approval functions are run. This is shown in @distances-table, where distance is only considered after $G_1$ and $G_5$ have been established as valid instances of $G$ for the program.
 
-#figure(caption: [A plugin dependency graph with a conflict between two non-_ZST_ plugins.])[
-  #import "diagrams/dependency-graphs.typ": conflict-req
-  #if_html(conflict-req())
-]<plugin-conflict>
-
+#figure(caption: [A set of dependencies and constraints where there is more than one valid candidate.])[
+  #let f(s) = {
+    if s == false {
+      return table.cell(fill: red.lighten(67%))[false]
+    } else {
+      return [true]
+    }
+  }
+  #table(
+    columns: (auto,auto,auto,auto,auto,auto,),
+    align: center + horizon,
+    table.header([], [$G_1$], [$G_2$], $G_3$, $G_4$, $G_5$),
+    $f_1 in D$, f(true), f(false), f(false), f(false), f(true),
+    $f_2 in E$, f(true), f(false), f(false), f(true), f(true),
+    $f_3 in F$, f(true), f(false), f(true), f(true), f(true),
+    [Valid Candidate], "yes", "no", "no", "no", "yes",
+    [Distance], "4", "3", "2", "1", "0",
+    [Chosen Candidate], "no", "", "", "", "yes"
+  )
+] <distances-table>
 
 == Choosing Resources
 
+Resources are chosen after the graph is solved, but before item ordering is performed. This can be summarized as:
+
+1. Find all resources that need approval from another plugin.
+2. Filter out all resource instances that do not pass approval functions.
+3. Pick the remaining resource instances that are closest to the entry points, preferring non-default values.
+
+The non-default preference is a divergence from the candidate plugin search. The justification from me here is that it is worse for a default value to be chosen over a user-intended value, especially if two entry points register a resource of the same type but one of them registers a non-default value. This is a debatable behaviour, and not load-bearing.
+
 == Plugins that touch the Rendering World
 
-#figure(caption: [])[
+`RenderApp` items should make up a separate list of items from the main list of plugins. Additionally, `RenderApp` should be prevented from adding dependencies on the basis that `DeclarativePlugin::build` is the source of truth for where dependencies are registered.
+
+#figure(caption: [Potential "Add to render world" API.])[
 ```rust
 trait DeclarativePlugin {
   // PluginOutput has the default type param `PluginDependencies`
   fn build(&self, output: &mut PluginOutput);
 
-  fn render_world(&self, output: &mut PluginOutput<()>) {
+  fn build_render(&self, output: &mut PluginOutput<()>) {
     // Empty default impl.
   }
 }
 ```
 ]<rendering>
+
+= Future Work
+
+The inspiration for this approach was first thinking about how build systems like Cargo or npm manage dependencies, as well as asking myself "how could hot-patching support the addition/removal of systems." The latter has not been addressed here, but the API surface of plugins has been made more restrictive in ways that make it possible to start reasoning about "diffing" plugin registration in future.
+
+Aside from hot-patching, it would be good to expose an API for registering functions that can be known to the asset BSN. This may need namespacing, but this document doesn't aim to go into the details of that here.
