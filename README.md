@@ -2,6 +2,10 @@
 
 Reference implementation for a version of plugins that can support dependencies, resolve conflicts, and expose information needed for tooling.
 
+## 0.0.2 Preview Release
+
+Small update to introduce the documentation pass and fix some bugs.
+
 ## 0.0.1 Preview Release
 
 This is a preview release to get feedback from maintainers and community members. An in-progress report of the technologies used and developed here is publicly available in the `writeup` branch.
