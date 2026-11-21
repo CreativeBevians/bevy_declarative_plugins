@@ -25,7 +25,7 @@
     edge(<some>, <iszst>, "-|>"),
     edge(<iszst>, <ilimit>, label: "No", "-|>"),
     edge(<ilimit>, <approved>, label: "Limit not reached", label-side: right, "-|>"),
-    edge(<ilimit>, <failure>, label:"Limit exceeded", label-anchor: "south", "|>--|>"),
+    edge(<ilimit>, <failure>, label:align(center)[Limit\ exceeded], label-anchor: "south", "|>--|>"),
     edge(<iszst>, <zstpresent.east>, label: "Yes", "-|>"),
     edge(<zstpresent>, (-1, 6), <getoutput>, label-pos: 80%, label: "Not present", "-|>"),
     edge(<zstpresent.west>, (-2, 4), "|>--"),

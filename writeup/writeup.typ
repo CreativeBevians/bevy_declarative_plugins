@@ -35,23 +35,19 @@
 
 #let cols = 1
 
-#title()[Draft: Declarative Plugins for ECS Worlds]
-
-#columns(cols)[
+#title()[Draft: Declarative Plugins for Bevy (and other ECS Worlds)]
 
 = Intro
 
-Plugins are how we meaningfully group sets of types and behaviour together in Bevy and other ECSs. The engine itself is made up of plugins, 3rd party crates make themselves available to developers as plugins, and we are encouraged to structure our code as plugins. The current plugin implementation has sharp edges, registering the same plugin twice crashes the program, and dependencies have been on the wishlist since very early on#footnote()[See: #link("https://github.com/bevyengine/bevy/issues/69")].
+Plugins are how we meaningfully group sets of types and behaviour together in Bevy and other ECSs. The Bevy engine is composed of plugins, 3rd party crates make themselves available to developers as plugins, and we are encouraged to structure our code as plugins. The current plugin implementation has sharp edges, with registering the same plugin twice crashing the program. Dependencies have been on the wishlist since very early on#footnote[Issue: #link("https://github.com/bevyengine/bevy/issues/69")], and would enable "deeper" 3rd party plugins that build upon each other in ways we've not yet seen in the Bevy ecosystem.
 
-This article discusses the implementation details
-
-A reference implementation can be found at #link("https://github.com/CreativeBevians/bevy_declarative_plugins"), where the shape of the API is documented rather than the implementation details found here.
+This article discusses the implementation details for the `bevy_declarative_plugins`#footnote[Source code: #link("https://github.com/CreativeBevians/bevy_declarative_plugins")] crate, which has acted as a reference implementation. The API shape is not discussed in detail here, but can be viewed at in the source code or viewed via the docs.rs#footnote[Documentation: #link("https://docs.rs/bevy_declarative_plugins/latest/bevy_declarative_plugins/")].
 
 = Motivation
 
 Every plugin registration function in Bevy has access to `&mut App`. This also gives every plugin registration function access to `&mut World`, the "ECS" world that stores all the ECS-related data and runs all the systems.
 
-Because every plugin registration function has full access, Bevy plugins can't have "dependencies" without worrying about what happens when things get registered more than once. This works fine if you own the entirety of what you're registering or if your 3rd party bevy dependencies do not register any dependencies you do. If either of these invariants are not upheld then the program crashes, and non-crashing behaviour is hard to design.
+Because every plugin registration function has full access, Bevy plugins can't have "dependencies" without the author needing to reason about the details of what those dependencies add and rely on themselves. This works fine if you own the entirety of what you're registering or if your 3rd party bevy dependencies do not register any dependencies you register yourself. If either of these conditions are not upheld then the program crashes, or non-crashing behaviour is hard to design.
 
 We can imagine easy non-crashing behaviour that still means a developer's preferences get overwritten because a prior instance of a plugin added something and when Bevy sees the a new instance of something that already exists, it skips it. Or we can imagine giving a similar mechanism _recency bias_, but this would still require that developers be aware of the call tree of plugin registration.
 
@@ -65,33 +61,89 @@ This comes with an intent to enable the following in future:
 
 1. Make hot-patching be able to account for adding or removing systems, other Bevy items, or even entire plugins.
 2. Provide static/semi-static analysis tools on Bevy projects.
-]
-#figure(caption: [Plugin registration.])[
+
+=== Changes in Plugin API
+
+Plugins are used by everything, so it will be necessary to make migrating to a new system as painless as possible. For adding plugins to an App and running it, the method now return a `Result<FinalizedApp, _>` where `FinalizedApp` is a newtype over `App` to dissuade calling declarative plugin registration twice, and exposes a `run` method. in @init-compare we can see how this amounts to a change in method name and an `unwrap` call between adding plugins and running the program.
+
+For defining plugins, beside the change in trait name the only visible change to the end user is replacing `&mut App` with `&mut PluginOutput`. At time of writing this doesn't replicate all additive API behaviour of `&mut App`, but as discussed later the paths for adding more behaviour are fairly clear.
+
+#figure(caption: [Plugin registration comparison.])[
+#table(columns: (auto, auto))[Old][New][
 ```rust
 let mut app = App::new();
 app.add_plugins((
-  FrameworkPlugins::default(), 
-  UserPluginA, 
-  UserPluginB,
-));
-app.run();
+    FrameworkPlugins::default(), 
+    UserPluginA, 
+    UserPluginB,
+  ))
+  .run();
 ```
-]<currentcode>
+][
+```rust
+let mut app = App::new();
+// Adding plugins is a one-time
+// thing, and can fail!
+app.add_plugins_declarative((
+    FrameworkPlugins::default(), 
+    UserPluginA, 
+    UserPluginB,
+  ))
+  .unwrap()
+  .run();
+```
+]
+]<init-compare>
 
-#figure(caption: [A plugin definition.])[
+#figure(caption: [Plugin definition comparison.])[
+#table(columns: (auto, auto))[Old][New][
 ```rs
 impl Plugin for UserPluginB {
-  fn register(&self, app: &mut App) {
-    // Add another plugin to the app.
+  fn build(
+      &self, 
+      app: &mut App
+    ) {
     app.add_plugins(UserGameSystems);
-    // Add items to world.
-    app.add_systems(Update, (system_10, system_11));
+    app.add_systems(
+      Update, (system_10, system_11)
+    );
     app.add_message::<MyMessage>();
-    // etc.
+    // ...
+    output.add_plugins(
+      UserUiSystem::dark()
+    );
   }
 }
 ```
-]<currentdef>
+][
+```rs
+impl DeclarativePlugin for UserPluginB {
+  fn build(
+      &self, 
+      output: &mut PluginOutput
+    ) {
+    output.add_plugins(UserGameSystems);
+    output.add_systems(
+      Update, (system_10, system_11)
+    );
+    output.add_message::<MyMessage>();
+    // ...
+    output.add_plugins(
+      UserUiSystem::dark()
+      .with_approval(
+        // We *really* do not
+        // want the light theme.
+        // So lets prevent it
+        // with a constraint.
+        |ui_system: &UserUiSystem|
+          ui_system.theme != "light"
+      )
+    );
+  }
+}
+```
+]
+] <def-compare>
 
 = Terminology
 
@@ -176,7 +228,7 @@ struct MetadataPtr {
 ```
 ] <metadata-ptr>
 
-Layout has been stored here largely for debugging reasons during development #footnote()[It is unpleasant to spend an hour asking yourself why a value isn't reversing its erasure properly, only to realise you erased a `Box<Type>` instead of a `Type`.], and can be argued for removal. Everything else is necessary to be able to destroy or visit or reacquire ownership of the value.
+Layout has been stored here largely for debugging reasons during development #footnote[At one point I spent an hour asking myself why a value isn't reversing its erasure properly, only to realise I erased a `Box<Type>` instead of a `Type`.], and can be argued for removal. Everything else is necessary to be able to destroy or visit or reacquire ownership of the value.
 
 Visiting a value also requires that the resulting value cannot contain a reference for the erasure-reversed value. To do this, the visit method has a `visit::<T, A>(self: &MetadataPtr, visitor: impl for<'a> Fn(&'a T) -> A) -> Option<A>` signature, where `T` is the type we're assuming while visiting and `A` is the resulting value.
 
@@ -199,7 +251,7 @@ Instead, we put all instances of the same plugin type into a node together and l
 
 An unsolved graph has nodes that store each instance of a plugin of a given type, and edges between each _instance_ to each _plugin type_. That is, $A_1, A_2, A_3 in A$ are all _instances_ of a plugin type `A: Plugin`, and edges are pairs of `(InstanceId, PluginTypeId)` (expressed in @unsolved-graph as $A_n ->_"dep" C$). When expressing dependencies, they can only point towards a plugin type, not a plugin instance.
 
-#figure(caption: [An version of the graph in @naive-graph2 that groups instances together.])[
+#figure(caption: [An Unsolved Graph representing the same graph as @naive-graph2. Instances are grouped together.])[
   #import "diagrams/dependency-graphs.typ": plugins-grouped
   #if_html(plugins-grouped())
 ] <unsolved-graph>
@@ -214,8 +266,6 @@ This expresses how plugins can register dependencies, and place constraints on t
 ] <solved-graph>
 
 A Solved Graph is one where we only have one instance of every plugin. It exists after the process of choosing which instance of a plugin to use. The only uncertain thing at this point in the process is which instances of a `Resource` to use, but most of the time resources will only be registered by a single plugin.
-
-The process of choosing a resource is similar to that of choosing a plugin instance, which will be explored later.
 
 == Approval Functions <approval-defh>
 
@@ -249,7 +299,7 @@ impl DeclarativePlugin for A {
 
 == `PluginOutput`
 
-How do we store all the information we need from a plugin to begin with? With a big struct that stores all the erased data in individual containers alongside some extra information for solving the graph:
+How do we store all the information we need from a plugin to begin with? With a struct that stores all the erased data in individual containers alongside some extra information for solving the graph:
 
 #figure(caption: [The datatype that is modified by `DeclarativePlugins::build`, in lieu of `&mut App`.])[
 ```rs
@@ -406,7 +456,7 @@ When two plugins register separate instances of a plugin type as a dependency, a
   #if_html(conflict-req())
 ]<plugin-conflict>
 
-To do this, we make use of the approval functions described in @approval-defh. As `DeclarativePlugin` is both dyn compatible and has `Any` as a supertrait, our well-typed approval functions#footnote()[See: `src/approval.rs` in the reference implementation.] are erased over a `dyn DeclarativePlugin` and cast down.
+To do this, we make use of the approval functions described in @approval-defh. As `DeclarativePlugin` is both dyn compatible and has `Any` as a supertrait, our well-typed approval functions#footnote[See: `src/approval.rs` in the reference implementation.] are erased over a `dyn DeclarativePlugin` and cast down.
 
 #figure(caption:[Expansion of the conflict in @plugin-conflict, showing the results of the approval functions.])[
   #import "diagrams/dependency-graphs.typ": conflict
@@ -424,9 +474,9 @@ To do this, we make use of the approval functions described in @approval-defh. A
   )
 ]<table-expansion>
 
-Plugin Developers have full control over what happens in `DeclarativePlugin::build`, and they can decide that the value of `&self` affects the approval functions it registers for other plugins. in @value-different $F_1$ and $F_2$ have different approval functions, and because of this $G_5$ will not be chosen as a valid instance of $G$ despite us not knowing which instance of $F$ will be the chosen instance. This short-circuiting is overly eager, but means we do not need to find a subgraph.
+Plugin Developers have full control over what happens in `DeclarativePlugin::build`, and they can decide that the value of `&self` affects the approval functions it registers for other plugins. in @value-different $F_1$ and $F_2$ have different approval functions, and because of this $G_3$ will not be chosen as a valid instance of $G$ despite us not knowing which instance of $F$ will be the chosen instance. This short-circuiting is overly eager, but means we do not need to find a subgraph.
 
-#figure(caption: [An approval matrix for ])[
+#figure(caption: [An approval matrix where two instances of the same plugin type $F$ disagree over an instance of $G$])[
   #let f(s) = {
     if s == false {
       return table.cell(fill: red.lighten(67%))[false]
@@ -435,15 +485,12 @@ Plugin Developers have full control over what happens in `DeclarativePlugin::bui
     }
   }
   #table(
-    columns: (auto,auto,auto,auto,auto,auto,),
+    columns: (auto,auto,auto,auto,),
     align: center + horizon,
-    table.header([], [$G_1$], [$G_2$], $G_3$, $G_4$, $G_5$),
-    $f_1 in D$, f(true), f(false), f(false), f(false), f(true),
-    $f_2 in E$, f(true), f(false), f(false), f(true), f(true),
-    $f_3 in F_1$, f(true), f(false), f(true), f(true), f(true),
-    $f_4 in F_2$, f(true), f(false), f(true), f(true), f(false),
-    [Valid Candidate], "yes", "no", "no", "no", "no",
-    [Chosen Candidate], "yes", "", "", "", "no"
+    table.header([], [$G_1$], [$G_2$], $G_3$),
+    $f_1 in F_1$, f(true), f(false), f(true),
+    $f_2 in F_2$, f(true), f(false), f(false),
+    [Valid Candidate], "yes", "no", "no",
   )
 ] <value-different>
 
@@ -483,7 +530,7 @@ Distances are a piece of information used to break stalemates between valid conf
   )
 ] <distances-table>
 
-== Choosing Resources
+== Choosing Resources <choose-res>
 
 Resources are chosen after the graph is solved, but before item ordering is performed. This can be summarized as:
 
@@ -491,7 +538,7 @@ Resources are chosen after the graph is solved, but before item ordering is perf
 2. Filter out all resource instances that do not pass approval functions.
 3. Pick the remaining resource instances that are closest to the entry points, preferring non-default values.
 
-The non-default preference is a divergence from the candidate plugin search. The justification from me here is that it is worse for a default value to be chosen over a user-intended value, especially if two entry points register a resource of the same type but one of them registers a non-default value. This is a debatable behaviour, and not load-bearing.
+The non-default preference is a divergence from the candidate plugin search. The design justification from me here is that it is worse for a default value to be chosen over a user-intended value, especially if two entry points register a resource of the same type but one of them registers a non-default value. This is a debatable behaviour, and not load-bearing.
 
 == Plugins that touch the Rendering World
 
@@ -511,6 +558,8 @@ trait DeclarativePlugin {
 ]<rendering>
 
 = Future Work
+
+Firstly, this is a draft document and those of you reading it should tell me what developer needs remain unmet by this design.
 
 The inspiration for this approach was first thinking about how build systems like Cargo or npm manage dependencies, as well as asking myself "how could hot-patching support the addition/removal of systems." The latter has not been addressed here, but the API surface of plugins has been made more restrictive in ways that make it possible to start reasoning about "diffing" plugin registration in future.
 
