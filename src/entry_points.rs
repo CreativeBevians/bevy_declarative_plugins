@@ -61,7 +61,7 @@ impl_entry_points!(a A, b B, c C, d D, e E, f F, g G, h H, i I, j J, k K, l L, m
 /// A trait for types that can be added as dependencies. Done this way so users
 /// can call builder-like configuration functions on plugins the same way they
 /// do when adding systems to an app, like so:
-/// ```
+/// ```ignore
 /// output.add_plugins((
 ///     // Regular, bare plugin.
 ///     MyPlugin,

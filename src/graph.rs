@@ -107,7 +107,7 @@ impl PluginList {
                 && !zst_already_expanded.contains_key(&output.working_plugin);
             if is_new_zst || !output.is_zero_sized_optimizable {
                 let type_id = output.working_plugin;
-                let (reg_id, dependencies) = graph.insert_node(item, output);
+                let (reg_id, dependencies) = graph.insert_node(item, output, None);
                 dependency_queue.extend(dependencies.0.into_iter().map(|d| (reg_id, d)));
                 if is_new_zst {
                     // If it's a ZST, we need to add it to the list of known ones.
@@ -117,9 +117,9 @@ impl PluginList {
                 // This should be "ZSTs already registered." Do nothing.
             }
         }
-        // TODO: detect cycles in expansion + stop adding when "expanded enough" + solved.
-        // mean moving this logic to the PluginRegistrationGraph building side.
-        while let Some((from, dependency)) = dependency_queue.pop_front() {
+        // We avoid infinite expansion by having there be a limit to the number
+        // of instances of a plugin in the graph.
+        while let Some((added_by, dependency)) = dependency_queue.pop_front() {
             let plugin_id = dependency.type_id;
             if graph.count_instances(plugin_id) > graph.max_repeat_instances {
                 return Err(PluginListExpansionError::TooManyPluginInstances(plugin_id));
@@ -132,8 +132,8 @@ impl PluginList {
                 };
                 let plugin_id = output.working_plugin;
                 let can_zst_optimize = output.is_zero_sized_optimizable;
-                let (reg_id, dependencies) = graph.insert_node(dyn_plugin, output);
-                graph.insert_edge(from, plugin_id);
+                let (reg_id, dependencies) = graph.insert_node(dyn_plugin, output, Some(added_by));
+                graph.insert_edge(added_by, plugin_id);
                 for dependency in dependencies.0 {
                     // If a dependency already has an existing instance
                     // registered in the graph that is suitable, we discard the
@@ -182,7 +182,7 @@ impl PluginList {
                 && !zst_already_expanded.contains_key(&dependency.type_id)
             {
                 // TODO: check if we ended up getting no instances at the end.
-                graph.insert_edge(from, dependency.type_id);
+                graph.insert_edge(added_by, dependency.type_id);
             } else {
                 // ZST, do nothing.
             }
@@ -210,9 +210,8 @@ pub(crate) struct PluginInstance {
     pub(crate) plugin_data: Box<dyn DeclarativePlugin>,
     /// The items the plugin wants to add to the App.
     pub(crate) output: PluginOutput<()>,
-    // TODO: actually track which plugin added each plugin.
-    // so that we can reliably track this information.
-    pub(crate) distance_from_entry: Option<usize>,
+    /// Distance from an entry point.
+    pub(crate) distance_from_entry: usize,
 }
 
 impl Debug for PluginInstance {
@@ -285,11 +284,13 @@ impl PluginRegistrationGraph {
         &mut self,
         plugin_data: Box<dyn DeclarativePlugin>,
         output: PluginOutput<D>,
+        added_by: Option<InstanceId>,
     ) -> (InstanceId, D) {
         let plugin_id = output.working_plugin;
         let registration_id = self.new_id(plugin_id);
         let (output, dependencies) = output.extract_dependencies();
-        let distance_from_entry = if output.is_entry_point { Some(0) } else { None };
+        let distance_from_entry = if output.is_entry_point { 0 } else if let Some(added_by) = added_by && let Some(source_instance) = self.get(added_by) { source_instance.distance_from_entry + 1 } else { usize::MAX };
+        dbg!(&distance_from_entry);
         let node = PluginInstance {
             registration_id,
             plugin_data,
@@ -603,8 +604,8 @@ impl DependenciesSolvedGraph {
                     ) else {
                         continue;
                     };
-                    let ongoing_distance = ongoing.distance_from_entry.unwrap_or(usize::MAX);
-                    let compare_distance = compare.distance_from_entry.unwrap_or(usize::MAX);
+                    let ongoing_distance = ongoing.distance_from_entry;
+                    let compare_distance = compare.distance_from_entry;
                     if compare_distance < ongoing_distance {
                         ongoing_candidate = compare_candidate;
                     } else if ongoing_distance == compare_distance
