@@ -41,7 +41,7 @@
 
 Plugins are how we meaningfully group sets of types and behaviour together in Bevy and other ECSs. The Bevy engine is composed of plugins, 3rd party crates make themselves available to developers as plugins, and we are encouraged to structure our code as plugins. The current plugin implementation has sharp edges, with registering the same plugin twice crashing the program. Dependencies have been on the wishlist since very early on#footnote[Issue: #link("https://github.com/bevyengine/bevy/issues/69")], and would enable "deeper" 3rd party plugins that build upon each other in ways we've not yet seen in the Bevy ecosystem.
 
-This article discusses the implementation details for the `bevy_declarative_plugins`#footnote[Source code: #link("https://github.com/CreativeBevians/bevy_declarative_plugins")] crate, which has acted as a reference implementation. The API shape is not discussed in detail here, but can be viewed at in the source code or viewed via the docs.rs#footnote[Documentation: #link("https://docs.rs/bevy_declarative_plugins/latest/bevy_declarative_plugins/")].
+This article discusses the implementation details for the `bevy_declarative_plugins`#footnote[Source code: #link("https://github.com/CreativeBevians/bevy_declarative_plugins")] crate, which is acting as a reference implementation. The API shape is not discussed in detail here, but can be viewed at in the source code or viewed via the docs.rs#footnote[Documentation: #link("https://docs.rs/bevy_declarative_plugins/latest/bevy_declarative_plugins/")].
 
 = Motivation
 
@@ -62,7 +62,7 @@ This comes with an intent to enable the following in future:
 1. Make hot-patching be able to account for adding or removing systems, other Bevy items, or even entire plugins.
 2. Provide static/semi-static analysis tools on Bevy projects.
 
-=== Changes in Plugin API
+== Changes in Plugin API
 
 Plugins are used by everything, so it will be necessary to make migrating to a new system as painless as possible. For adding plugins to an App and running it, the method now return a `Result<FinalizedApp, _>` where `FinalizedApp` is a newtype over `App` to dissuade calling declarative plugin registration twice, and exposes a `run` method. in @init-compare we can see how this amounts to a change in method name and an `unwrap` call between adding plugins and running the program.
 
@@ -166,7 +166,7 @@ Here we'll work backwards, from answering "how do we erase and then register ite
 
 "Items" are the fundamental "Bevy things" we add during plugin registration. If it's something that introduces a piece of app-relevant information to `World`, it's an Item. An Item is an _additive_ piece of information, it introduces information and erases no existing information.
 
-We want to be able to hand off item types to a final `World` in an order we decide once we've performed all our processing. To do this, we'll represent the items we're registering as an enum, and we'll store those items in a `Vec`:
+We want to be able to hand off item types to a final `World` in an order we decide once we've performed all our plugin dependency solving. To do this, we'll represent the items we're registering as an enum, and we'll store those items in a `Vec`:
 
 #figure(caption: [Enum describing what we can register with an `World` during plugin registration.])[
 ```rust
