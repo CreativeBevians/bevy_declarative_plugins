@@ -289,8 +289,15 @@ impl PluginRegistrationGraph {
         let plugin_id = output.working_plugin;
         let registration_id = self.new_id(plugin_id);
         let (output, dependencies) = output.extract_dependencies();
-        let distance_from_entry = if output.is_entry_point { 0 } else if let Some(added_by) = added_by && let Some(source_instance) = self.get(added_by) { source_instance.distance_from_entry + 1 } else { usize::MAX };
-        dbg!(&distance_from_entry);
+        let distance_from_entry = if output.is_entry_point {
+            0
+        } else if let Some(added_by) = added_by
+            && let Some(source_instance) = self.get(added_by)
+        {
+            source_instance.distance_from_entry + 1
+        } else {
+            usize::MAX
+        };
         let node = PluginInstance {
             registration_id,
             plugin_data,
