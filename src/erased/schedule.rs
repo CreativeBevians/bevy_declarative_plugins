@@ -83,7 +83,7 @@ impl StagedScheduleLabel {
         Some(Self {
             staged: Staged {
                 erased: ErasedScheduleLabel::new(label, relative_to)?,
-                unerase_and_apply_to_world: Self::reverse_erase_apply_to_world::<S, O>,
+                reverse_erasure_and_apply_to_world: Self::reverse_erase_apply_to_world::<S, O>,
             },
         })
     }
@@ -153,7 +153,7 @@ impl StagedSystem {
         Some(Self {
             staged: Staged {
                 erased: ErasedScheduleSystemsPair::new(pair)?,
-                unerase_and_apply_to_world: Self::reverse_erase_apply_to_world::<L, S, M>,
+                reverse_erasure_and_apply_to_world: Self::reverse_erase_apply_to_world::<L, S, M>,
             },
         })
     }
@@ -192,12 +192,12 @@ impl StagedSystem {
 /// This lets us erase the value while also taking advantage of
 pub(crate) struct Staged<E> {
     pub(crate) erased: E,
-    pub(crate) unerase_and_apply_to_world: fn(&mut World, E),
+    pub(crate) reverse_erasure_and_apply_to_world: fn(&mut World, E),
 }
 
 impl<E> Staged<E> {
     /// Use the [`Self::unerase_and_apply_to_world`] fn on the erased value.
     pub(crate) fn apply_to_world(self, world: &mut World) {
-        (self.unerase_and_apply_to_world)(world, self.erased)
+        (self.reverse_erasure_and_apply_to_world)(world, self.erased)
     }
 }

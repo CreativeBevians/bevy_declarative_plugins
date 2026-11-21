@@ -1,0 +1,38 @@
+#import "@preview/fletcher:0.5.8": diagram, edge, node, as-label
+#import "../shared.typ": *
+#let algo-expansion() = {
+ diagram(
+    node-stroke: .1em,
+    spacing: 2em,
+    node-shape: rect,
+    node((0,0), [Populate Queue with Entry Point Plugins], name: <populate>),
+    node((0,1), [Pop front of queue], name: <pop>),
+    node((-0.5,2), `Some(StagedPlugin)`, name: <some>),
+    node((0.5,2), `None`, name: <none>),
+    node((0.5,3), [Finished building Graph], name: <finish>),
+    node((-0.5,3), [Is a _ZST_?], name: <iszst>),
+    node((-0,4), [Check Instance Limit], name: <ilimit>),
+    node((-0,5), [Check Approval], name: <approved>),
+    node((-1,4), [Check if\ already present], name: <zstpresent>),
+    node((1,4), [Graph Expansion Failed], name: <failure>),
+    node((-0,6), [Compute $output$], name: <getoutput>),
+    node((-0,7), [Extract Dependencies into\ ($output',dependencies)$], name: <extractdeps>),
+    node((0,8), [Add $output'$ to Graph\ Push $dependencies$ to back of queue], name: <addpush>),
+    edge(<populate>, <pop>, "-|>"),
+    edge(<pop>, <some>, "-|>"),
+    edge(<pop>, <none>, "-|>"),
+    edge(<none>, <finish>, "-|>"),
+    edge(<some>, <iszst>, "-|>"),
+    edge(<iszst>, <ilimit>, label: "No", "-|>"),
+    edge(<ilimit>, <approved>, label: "Limit not reached", label-side: right, "-|>"),
+    edge(<ilimit>, <failure>, label:align(center)[Limit\ exceeded], label-anchor: "south", "|>--|>"),
+    edge(<iszst>, <zstpresent.east>, label: "Yes", "-|>"),
+    edge(<zstpresent>, (-1, 6), <getoutput>, label-pos: 80%, label: "Not present", "-|>"),
+    edge(<zstpresent.west>, (-2, 4), "|>--"),
+    edge(<approved.west>, (-0.5,5), (-2, 5), label-pos: 55%, label: "Not approved", crossing: true, "|>--"),
+    edge(<approved>, <getoutput>, label: "Approved", "-|>"),
+    edge(<getoutput>, <extractdeps>, "-|>"),
+    edge(<extractdeps>, <addpush>, "-|>"),
+    edge(<addpush>, (-2, 8), (-2, 1), <pop>, "|>--|>"),
+  )
+}

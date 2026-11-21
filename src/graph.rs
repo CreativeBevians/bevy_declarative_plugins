@@ -1,3 +1,20 @@
+//! Module containing the process of turning the "Entry point" plugins
+//! into a dependency graph, solving that dependency graph, then turning the
+//! solved graph into a list of items to add to a Bevy world.
+//!
+//! The core types and transforms for this process are:
+//!
+//! 1. [`EntryPoints`] -> [`PluginList`], turning a (potentially nested) tuple
+//!    of plugins into the list of root plugins we care most about.
+//! 2. [`PluginList`] -> [`PluginRegistrationGraph`], expanding that list of
+//!    plugins into a graph.
+//! 3. [`PluginRegistrationGraph`] -> [`DependenciesSolvedGraph`], solving
+//!    dependencies and constraints from the registration graph to choose the
+//!    right output to use.
+//! 4. [`DependenciesSolvedGraph`] -> [`OrderedPluginItems`], turning that
+//!    solved graph into an ordered list of items to register with a world.
+//!
+//!
 use bevy_ecs::observer::Observer;
 use bevy_platform::collections::HashMap;
 use core::{convert::identity, hash::Hash};
@@ -78,7 +95,7 @@ impl PluginList {
     /// instances of a given type to prevent infinite expansion. See:
     /// [`PluginListExpansionError::TooManyPluginInstances`].
     pub(crate) fn expand(mut self) -> Result<PluginRegistrationGraph, PluginListExpansionError> {
-        let mut zst_already_expanded: HashMap<PluginTypeId, RegistrationId> = HashMap::new();
+        let mut zst_already_expanded: HashMap<PluginTypeId, InstanceId> = HashMap::new();
         let mut graph = PluginRegistrationGraph::new(250);
         for (_, output) in &mut self.nodes {
             // Mark entry points.
@@ -90,7 +107,7 @@ impl PluginList {
                 && !zst_already_expanded.contains_key(&output.working_plugin);
             if is_new_zst || !output.is_zero_sized_optimizable {
                 let type_id = output.working_plugin;
-                let (reg_id, dependencies) = graph.insert_node(item, output);
+                let (reg_id, dependencies) = graph.insert_node(item, output, None);
                 dependency_queue.extend(dependencies.0.into_iter().map(|d| (reg_id, d)));
                 if is_new_zst {
                     // If it's a ZST, we need to add it to the list of known ones.
@@ -100,9 +117,9 @@ impl PluginList {
                 // This should be "ZSTs already registered." Do nothing.
             }
         }
-        // TODO: detect cycles in expansion + stop adding when "expanded enough" + solved.
-        // mean moving this logic to the PluginRegistrationGraph building side.
-        while let Some((from, dependency)) = dependency_queue.pop_front() {
+        // We avoid infinite expansion by having there be a limit to the number
+        // of instances of a plugin in the graph.
+        while let Some((added_by, dependency)) = dependency_queue.pop_front() {
             let plugin_id = dependency.type_id;
             if graph.count_instances(plugin_id) > graph.max_repeat_instances {
                 return Err(PluginListExpansionError::TooManyPluginInstances(plugin_id));
@@ -115,8 +132,8 @@ impl PluginList {
                 };
                 let plugin_id = output.working_plugin;
                 let can_zst_optimize = output.is_zero_sized_optimizable;
-                let (reg_id, dependencies) = graph.insert_node(dyn_plugin, output);
-                graph.insert_edge(from, plugin_id);
+                let (reg_id, dependencies) = graph.insert_node(dyn_plugin, output, Some(added_by));
+                graph.insert_edge(added_by, plugin_id);
                 for dependency in dependencies.0 {
                     // If a dependency already has an existing instance
                     // registered in the graph that is suitable, we discard the
@@ -165,7 +182,7 @@ impl PluginList {
                 && !zst_already_expanded.contains_key(&dependency.type_id)
             {
                 // TODO: check if we ended up getting no instances at the end.
-                graph.insert_edge(from, dependency.type_id);
+                graph.insert_edge(added_by, dependency.type_id);
             } else {
                 // ZST, do nothing.
             }
@@ -176,9 +193,9 @@ impl PluginList {
 
 /// Sequential identifier for plugin registration.
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Clone, Copy)]
-pub(crate) struct RegistrationId(usize, PluginTypeId);
+pub(crate) struct InstanceId(usize, PluginTypeId);
 
-impl RegistrationId {
+impl InstanceId {
     pub(crate) fn plugin_id(&self) -> PluginTypeId {
         self.1
     }
@@ -188,14 +205,13 @@ impl RegistrationId {
 /// register.
 pub(crate) struct PluginInstance {
     /// Sequential registration identifier.
-    pub(crate) registration_id: RegistrationId,
+    pub(crate) registration_id: InstanceId,
     /// Type-erased plugin configuration data.
     pub(crate) plugin_data: Box<dyn DeclarativePlugin>,
     /// The items the plugin wants to add to the App.
     pub(crate) output: PluginOutput<()>,
-    // TODO: actually track which plugin added each plugin.
-    // so that we can reliably track this information.
-    pub(crate) distance_from_entry: Option<usize>,
+    /// Distance from an entry point.
+    pub(crate) distance_from_entry: usize,
 }
 
 impl Debug for PluginInstance {
@@ -220,7 +236,7 @@ impl Debug for PluginInstance {
 pub(crate) struct PluginRegistrationGraph {
     registration_counter: usize,
     nodes: HashMap<PluginTypeId, Vec<PluginInstance>>,
-    dependency_edges: HashMap<RegistrationId, Vec<PluginTypeId>>,
+    dependency_edges: HashMap<InstanceId, Vec<PluginTypeId>>,
     max_repeat_instances: usize,
 }
 
@@ -235,10 +251,10 @@ impl Debug for PluginRegistrationGraph {
 }
 
 impl PluginRegistrationGraph {
-    /// Generate a new, unique [`RegistrationId`]. Increments an internal
+    /// Generate a new, unique [`InstanceId`]. Increments an internal
     /// counter.
-    fn new_id(&mut self, plugin_id: PluginTypeId) -> RegistrationId {
-        let id = RegistrationId(self.registration_counter, plugin_id);
+    fn new_id(&mut self, plugin_id: PluginTypeId) -> InstanceId {
+        let id = InstanceId(self.registration_counter, plugin_id);
         self.registration_counter += 1;
         id
     }
@@ -268,11 +284,20 @@ impl PluginRegistrationGraph {
         &mut self,
         plugin_data: Box<dyn DeclarativePlugin>,
         output: PluginOutput<D>,
-    ) -> (RegistrationId, D) {
+        added_by: Option<InstanceId>,
+    ) -> (InstanceId, D) {
         let plugin_id = output.working_plugin;
         let registration_id = self.new_id(plugin_id);
         let (output, dependencies) = output.extract_dependencies();
-        let distance_from_entry = if output.is_entry_point { Some(0) } else { None };
+        let distance_from_entry = if output.is_entry_point {
+            0
+        } else if let Some(added_by) = added_by
+            && let Some(source_instance) = self.get(added_by)
+        {
+            source_instance.distance_from_entry + 1
+        } else {
+            usize::MAX
+        };
         let node = PluginInstance {
             registration_id,
             plugin_data,
@@ -333,7 +358,7 @@ impl PluginRegistrationGraph {
     /// Get the registration IDs of each valid candidate.
     /// Called naive here because it doesn't cull valid candidates that were
     /// added but aren't depended on by anything.
-    pub(crate) fn naive_candidates(&self) -> Result<Vec<RegistrationId>, ()> {
+    pub(crate) fn naive_candidates(&self) -> Result<Vec<InstanceId>, ()> {
         let mut candidates = Vec::new();
         for plugin_id in self.plugin_ids() {
             // Expensive! There is almost definitely a faster way of doing this
@@ -344,7 +369,7 @@ impl PluginRegistrationGraph {
         Ok(candidates)
     }
 
-    pub(crate) fn candidate_exists(&self, plugin_id: PluginTypeId) -> Result<RegistrationId, ()> {
+    pub(crate) fn candidate_exists(&self, plugin_id: PluginTypeId) -> Result<InstanceId, ()> {
         let mut working = None;
         // We have two loops here, the outer loop is to go through each candidate.
         // The inner loop is to find out if there is any version of this
@@ -396,7 +421,7 @@ impl PluginRegistrationGraph {
         working.ok_or(())
     }
 
-    pub(crate) fn get(&self, registration_id: RegistrationId) -> Option<&PluginInstance> {
+    pub(crate) fn get(&self, registration_id: InstanceId) -> Option<&PluginInstance> {
         self.instances_of_plugin(registration_id.plugin_id())
             .find(|node| node.registration_id == registration_id)
     }
@@ -440,10 +465,10 @@ impl PluginRegistrationGraph {
     /// All the dependency edges in the graph.
     ///
     /// Note that this is from a specific instance in the graph
-    /// ([`RegistrationId`]) to a more general plugin type. This reflects
+    /// ([`InstanceId`]) to a more general plugin type. This reflects
     /// the way dependencies can only specify their needs with an approval
     /// function, rather than demanding a specific instance.
-    pub(crate) fn insert_edge(&mut self, from: RegistrationId, to: PluginTypeId) {
+    pub(crate) fn insert_edge(&mut self, from: InstanceId, to: PluginTypeId) {
         self.dependency_edges.entry(from).or_default().push(to);
     }
 }
@@ -586,8 +611,8 @@ impl DependenciesSolvedGraph {
                     ) else {
                         continue;
                     };
-                    let ongoing_distance = ongoing.distance_from_entry.unwrap_or(usize::MAX);
-                    let compare_distance = compare.distance_from_entry.unwrap_or(usize::MAX);
+                    let ongoing_distance = ongoing.distance_from_entry;
+                    let compare_distance = compare.distance_from_entry;
                     if compare_distance < ongoing_distance {
                         ongoing_candidate = compare_candidate;
                     } else if ongoing_distance == compare_distance

@@ -58,7 +58,20 @@ impl_entry_points!(a A, b B, c C, d D, e E, f F, g G, h H, i I, j J, k K, l L, m
 impl_entry_points!(a A, b B, c C, d D, e E, f F, g G, h H, i I, j J, k K, l L, m M, n N, o O);
 impl_entry_points!(a A, b B, c C, d D, e E, f F, g G, h H, i I, j J, k K, l L, m M, n N, o O, p P);
 
-/// A trait for types that can be added as dependencies.
+/// A trait for types that can be added as dependencies. Done this way so users
+/// can call builder-like configuration functions on plugins the same way they
+/// do when adding systems to an app, like so:
+/// ```ignore
+/// output.add_plugins((
+///     // Regular, bare plugin.
+///     MyPlugin,
+///     // Plugin with an approval function tied to it.
+///     3rdPartyPlugin { value: "Nifty" }
+///         .with_approval(|party: &3rdPartyPlugin| party.value != "Terrible")
+/// ));
+/// ```
+///
+/// See the writeup or the top-level module docs for reasoning and background.
 pub trait AddDependency: Sized {
     /// The underlying plugin for the type, for groups of plugins this should
     /// be the never type ([`!`])
